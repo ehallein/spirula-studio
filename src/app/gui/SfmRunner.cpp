@@ -14,7 +14,6 @@
 
 #include "app/AppPaths.h"
 #include "app/gui/Subprocess.h"
-#include "core/ModelMirror.h"
 #ifdef SS_TOOL_SFM
 // The stage tags the child prints and the manifest it reads; a build without the
 // module has no child to run (see availability()).
@@ -27,6 +26,7 @@
 #include "aliked/model/Fetch.h"
 #include "loma/Loma.h"
 #include "loma/model/Fetch.h"
+#include "app/gui/FetchSource.h"
 #include "nn/io/Fetch.h"
 #endif
 
@@ -128,7 +128,7 @@ std::vector<PendingDownload> sfm_feature_downloads(int features, int matcher) {
 #if defined(SS_TOOL_SFM) && defined(SS_HAVE_ALIKED) && SS_HAVE_ALIKED
     auto take = [&](const nn::FetchFile& f) {
         const std::string dest = nn::cached_path(f);
-        if (!file_is_cached(dest, f.bytes)) out.push_back({f.url, dest, f.bytes, spirula::model_mirror_url(f.file)});
+        if (!file_is_cached(dest, f.bytes)) out.push_back(pending_download(f));
     };
     auto want_aliked = [&](const char* id) {
         if (const aliked::ModelSource* src = aliked::find_model_source(id)) take(src->onnx);
@@ -256,6 +256,11 @@ void SfmRunner::take_reconstruction(SfmJob& job) {
 void SfmRunner::take_geometry(SfmJob& job) {
     std::lock_guard<std::mutex> lk(_mu);
     job.geometry = _live.geometry;
+}
+
+void SfmRunner::take_dense(SfmJob& job) {
+    std::lock_guard<std::mutex> lk(_mu);
+    job.dense = _live.dense;
 }
 
 void SfmRunner::take_masking(PrepJob& prep) {
@@ -833,9 +838,18 @@ void SfmRunner::run(SfmJob job) {
                     record.begin(Step::Masks, masks_fields(p));
             };
             auto done = [&](Stage s, const PrepJob&) {
-                record.finish(s == Stage::Frames ? Step::Frames : Step::Masks);
+                if (s == Stage::Frames) record.finish(Step::Frames, prep.captures);
+                else record.finish(Step::Masks);
             };
+            job.prep.recorded_captures = recorded_captures(ws.string(), job.prep);
             if (!dp.run(job.prep, prep, err, refresh, done)) return fail(err);
+        }
+        // Frames a video made, brought back as a folder, still have its sensors.
+        for (PrepCapture& c : captures_behind(job.prep)) {
+            bool have = false;
+            for (const PrepCapture& o : prep.captures)
+                have = have || (o.subdir == c.subdir && o.path == c.path);
+            if (!have) prep.captures.push_back(std::move(c));
         }
         {
             // The folders the previews draw from, published as soon as they
@@ -919,6 +933,15 @@ void SfmRunner::run(SfmJob job) {
                 const fs::path mf = ws / ".spirula_manifest.yaml";
                 std::ofstream(mf, std::ios::binary | std::ios::trunc) << now[++k];
                 settings.push_back(mf.string());
+            }
+            // What the user kept or asked again of `spirula sfm`'s own stages;
+            // the rest it decides by its signatures, as the plan predicted.
+            for (const auto& [part, flag] : {std::pair{ModelPart::Features, "--reuse-features"},
+                                             std::pair{ModelPart::Matching, "--reuse-matches"}}) {
+                const StepPlan& sp = plan[part];
+                if (sp.act == Act::Keep) settings.insert(settings.end(), {flag, "keep"});
+                else if (sp.act == Act::Redo && sp.why == Why::Requested)
+                    settings.insert(settings.end(), {flag, "redo"});
             }
             // Explicit for both in-process and self-child runs.
             if (!job.device_selector.empty()) {
@@ -1005,7 +1028,9 @@ void SfmRunner::run(SfmJob job) {
         if (!reuse_model && modelled) record.finish(Step::Model);
 
         // ---- 3. the laser scans: alignment, then their depth and normals ----
-        if (job.lidar.enabled()) {
+        const StepPlan& align = plan[ModelPart::Align];
+        job.lidar.overwrite = align.act == Act::Redo && align.why == Why::Requested;
+        if (job.lidar.enabled() && align.act != Act::Keep) {
             // Masks folded into masks/ are already the right way round; ones
             // read where they lie keep their own convention.
             job.lidar.flip_masks = prep.mask_dir_flipped;
@@ -1014,6 +1039,22 @@ void SfmRunner::run(SfmJob job) {
             if (!run_lidar_step(job.lidar, ws.string(), prep.image_dir, _prog,
                                 _films.geometry, _cancel, err))
                 return fail(err);
+        }
+
+        take_dense(job);
+        plan = plan_dataset(plan_job(job), prior, rec, req, &plan, Step::Dense);
+        verify_dense_reuse(plan,ws.string(),_cancel);
+        say(Step::Dense);
+        if (makes(plan[Step::Dense].act)) {
+            record.begin(Step::Dense, dense_fields(job.dense), {"roma.ply"});
+            std::string error;
+            auto dense = job.dense;
+            if (dense.config.mask_dir == "masks" && !prep.mask_dir_cfg.empty()) {
+                dense.config.mask_dir = prep.mask_dir_cfg;
+                dense.config.invert_masks = dense.config.invert_masks != prep.mask_dir_flipped;
+            }
+            if (!run_dense_step(dense, ws.string(), prep.image_dir, _prog, _cancel, error)) return fail(error);
+            record.finish(Step::Dense);
         }
 
         // ---- 4. depth and normals -------------------------------------------

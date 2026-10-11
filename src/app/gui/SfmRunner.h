@@ -114,6 +114,7 @@ struct SfmJob {
     GeometryJob geometry;
     // Laser scans the model is aligned with; they replace the geometry step.
     LidarJob lidar;
+    DenseJob dense;
 
     // ---- reconstruction ----
     // What the user asked to redo or keep; the plan (DatasetPlan.h) decides
@@ -157,10 +158,9 @@ struct SfmJob {
     // 0 flat, 1 bottom-up. Flat for every capture, whatever its size: there is
     // no automatic switch, here or in `spirula sfm`.
     int mapper = 0;
-    // 0 SIFT, 1 ALIKED-n16rot, 2 ALIKED-n32. The learned ones fetch a
-    // checkpoint on first use and run on their own resolution ladder, so the
-    // quality preset means something different for each -- which is why this
-    // is a frontend choice and not a quality level.
+    // An index into kSfmFeatures. A frontend choice, not a quality level: the
+    // learned ones run on their own resolution ladder, so the quality preset
+    // means something different for each.
     int features = 0;
     // 0 brute force, 1 LightGlue. Only meaningful with a learned frontend, and
     // an order of magnitude slower per pair -- the panel greys it out for SIFT
@@ -297,6 +297,7 @@ private:
     void take_reconstruction(SfmJob& job);
     void take_masking(PrepJob& prep);
     void take_geometry(SfmJob& job);
+    void take_dense(SfmJob& job);
     void log(const std::string& line, bool detail = true);
     void set_stage(Stage st, const std::string& s);
     // Stage changes driven by the child's output, which repeats a

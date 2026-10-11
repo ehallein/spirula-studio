@@ -884,6 +884,20 @@ static int cmdMap(int argc, char** argv) {
         compaction.reset();
         if (opt.verbose) reportFeatureCompaction(stats);
     }
+    // As `auto` does: the pair lists and the graph past 256 MB go beside the output, mapped.
+    {
+        size_t n = 0;
+        for (const TwoViewMatches& p : db.pairs) n += p.matches.size();
+        fs::path dir = output.empty() ? fs::path(matchesPath).parent_path() : fs::path(output);
+        if (dir.empty()) dir = ".";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        if (fs::is_directory(dir, ec)) {
+            if (n * sizeof(FeatureMatch) > (256ull << 20))
+                spillMatches(db, (dir / ".spirula-matches.spill").string());
+            opt.spill_dir = dir.string();
+        }
+    }
 
     // The camera setup, in order of authority: what the command line asked for,
     // else what verification recorded in matches.bin (D47), else derived here.
@@ -913,7 +927,7 @@ static int cmdMap(int argc, char** argv) {
         size_t stride = std::max<size_t>(1, db.pairs.size() / want);
         for (size_t p = 0; p < db.pairs.size() && sample.size() < want; p += stride) {
             sample.push_back({db.pairs[p].image1, db.pairs[p].image2});
-            sm.push_back(db.pairs[p].matches);
+            sm.push_back(db.pairs[p].matches.toVector());
         }
         bootstrapGroupFocals(feats, cs.ids, sample, sm, cs.cameras, cs.focal_given,
                              cs.focal_measured, TwoViewOptions{}, 200, 0, opt.verbose);
@@ -944,8 +958,8 @@ static int cmdMap(int argc, char** argv) {
     std::unique_ptr<ExifGpsPriors> exif_priors =
         cfg.sensor_map && !priors ? makeExifGpsPriors(cfg, cfg.image_dir, db, cs, opt.verbose)
                                   : nullptr;
-    Mapper mapper(db, feats, opt, cs.ids, &rigs, &seqs,
-                  priors ? static_cast<PriorSource*>(priors.get()) : exif_priors.get());
+    PriorSource* mapped = priors ? static_cast<PriorSource*>(priors.get()) : exif_priors.get();
+    Mapper mapper(db, feats, opt, cs.ids, &rigs, &seqs, mapped);
     std::vector<Reconstruction> models;
     AssembleStats ast;
     if (cfg.resume.empty()) {
@@ -1086,7 +1100,8 @@ static int cmdMap(int argc, char** argv) {
         printExtraModels(models, feats);
     }
     std::vector<sfm::ModelGauge> map_gauge;
-    const bool map_metric = fixGauge(models, cfg, cfg.image_dir, opt.verbose, map_gauge, &sensors);
+    const bool map_metric =
+        fixGauge(models, cfg, cfg.image_dir, opt.verbose, map_gauge, &sensors, mapped);
     recolorPoints(models, cfg);
     splitCamerasBySize(models, feats);
     if (!output.empty()) writeModels(models, output, opt.verbose, map_gauge, &rigs);

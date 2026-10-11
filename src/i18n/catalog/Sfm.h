@@ -858,6 +858,21 @@ SS_MSG(extract_reusing,
     RU("Признаков, записанных прошлым запуском: {0}/{1} изображений — используем их."),
     TR("Önceki çalıştırmanın yazdığı öznitelik: {0}/{1} görüntü -- korunuyor."));
 
+SS_MSG(extract_kept_other_settings,
+    EN("Keeping the features in {0} although other settings made them (--reuse-features keep)."),
+    JA("{0} の特徴点は別の設定で作られていますが、そのまま使います（--reuse-features keep）。"),
+    ZH_HANS("{0} 里的特征是用别的设置做的，仍然沿用（--reuse-features keep）。"),
+    ZH_HANT("{0} 裡的特徵是用別的設定做的，仍然沿用（--reuse-features keep）。"),
+    KO("{0} 의 특징점은 다른 설정으로 만든 것이지만 그대로 씁니다（--reuse-features keep）."),
+    DE("Die Merkmale in {0} werden behalten, obwohl andere Einstellungen sie erzeugt haben (--reuse-features keep)."),
+    FR("Les points de {0} sont conservés bien que d'autres réglages les aient faits (--reuse-features keep)."),
+    ES("Se conservan los rasgos de {0} aunque los hicieron otros ajustes (--reuse-features keep)."),
+    PT("Os pontos em {0} são mantidos embora outras definições os tenham feito (--reuse-features keep)."),
+    IT("I punti in {0} si conservano anche se li hanno fatti altre impostazioni (--reuse-features keep)."),
+    NL("De kenmerken in {0} blijven, al zijn ze met andere instellingen gemaakt (--reuse-features keep)."),
+    RU("Признаки в {0} сохраняются, хотя сделаны с другими настройками (--reuse-features keep)."),
+    TR("{0} içindeki öznitelikler başka ayarlarla yapılmış olsa da korunuyor (--reuse-features keep)."));
+
 SS_MSG(extract_masks_look_inverted,
     EN("Masks dropped {0}% of all keypoints. Unless this capture is a single object "
        "on a masked-out background, the masks are probably inverted -- this pipeline "
@@ -1153,6 +1168,36 @@ SS_MSG(match_reuse_failed,
     NL("De koppelingen van een eerdere run waren onleesbaar ({0}); opnieuw koppelen."),
     RU("Не удалось прочитать сопоставления прошлого запуска ({0}); сопоставляем заново."),
     TR("Önceki çalıştırmanın eşlemeleri okunamadı ({0}); yeniden eşleniyor."));
+
+SS_MSG(match_kept_other_settings,
+    EN("Keeping the matches in {0} although other settings made them (--reuse-matches keep)."),
+    JA("{0} の照合結果は別の設定で作られていますが、そのまま使います（--reuse-matches keep）。"),
+    ZH_HANS("{0} 里的匹配结果是用别的设置做的，仍然沿用（--reuse-matches keep）。"),
+    ZH_HANT("{0} 裡的匹配結果是用別的設定做的，仍然沿用（--reuse-matches keep）。"),
+    KO("{0} 의 정합 결과는 다른 설정으로 만든 것이지만 그대로 씁니다（--reuse-matches keep）."),
+    DE("Die Paare in {0} werden behalten, obwohl andere Einstellungen sie erzeugt haben (--reuse-matches keep)."),
+    FR("Les appariements de {0} sont conservés bien que d'autres réglages les aient faits (--reuse-matches keep)."),
+    ES("Se conservan los emparejamientos de {0} aunque los hicieron otros ajustes (--reuse-matches keep)."),
+    PT("Os pareamentos em {0} são mantidos embora outras definições os tenham feito (--reuse-matches keep)."),
+    IT("Gli abbinamenti in {0} si conservano anche se li hanno fatti altre impostazioni (--reuse-matches keep)."),
+    NL("De koppelingen in {0} blijven, al zijn ze met andere instellingen gemaakt (--reuse-matches keep)."),
+    RU("Сопоставления в {0} сохраняются, хотя сделаны с другими настройками (--reuse-matches keep)."),
+    TR("{0} içindeki eşlemeler başka ayarlarla yapılmış olsa da korunuyor (--reuse-matches keep)."));
+
+SS_MSG(match_keep_refused,
+    EN("The matches in {0} cannot be kept: the features they index changed; matching again."),
+    JA("{0} の照合結果は使えません。参照している特徴点が変わったので、照合し直します。"),
+    ZH_HANS("{0} 里的匹配结果不能沿用：它们引用的特征变了，重新匹配。"),
+    ZH_HANT("{0} 裡的匹配結果不能沿用：它們引用的特徵變了，重新比對。"),
+    KO("{0} 의 정합 결과는 쓸 수 없습니다. 가리키는 특징점이 바뀌어 다시 정합합니다."),
+    DE("Die Paare in {0} lassen sich nicht behalten: die Merkmale, auf die sie verweisen, haben sich geändert; es wird neu gepaart."),
+    FR("Les appariements de {0} ne peuvent être conservés : les points qu'ils désignent ont changé ; on apparie à nouveau."),
+    ES("No se pueden conservar los emparejamientos de {0}: cambiaron los rasgos a los que apuntan; se emparejan de nuevo."),
+    PT("Os pareamentos em {0} não podem ser mantidos: os pontos a que se referem mudaram; pareando de novo."),
+    IT("Gli abbinamenti in {0} non si possono conservare: i punti a cui rimandano sono cambiati; si confronta di nuovo."),
+    NL("De koppelingen in {0} kunnen niet blijven: de kenmerken waarnaar ze verwijzen zijn veranderd; opnieuw koppelen."),
+    RU("Сопоставления в {0} нельзя сохранить: изменились признаки, на которые они ссылаются; сопоставляем заново."),
+    TR("{0} içindeki eşlemeler korunamaz: gösterdikleri öznitelikler değişti; yeniden eşleniyor."));
 
 SS_MSG(match_need_two,
     EN("At least 2 feature files are needed in {0}."),
@@ -3042,6 +3087,30 @@ SS_MSG(metric_failed,
        "системе -- {1}"),
     TR("Model {0}: metrik çerçeve UYGULANMADI, normalize çerçevede yazıldı -- {1}"));
 
+SS_MSG(metric_mapped,
+    EN("Model {0}: metric frame kept from the GPS factors the reconstruction was solved with "
+       "-- scale {1}, radius {2} m"),
+    JA("モデル {0}: 再構築で使った GPS 因子のメートル座標系を保持しました -- 縮尺 {1}、半径 {2} m"),
+    ZH_HANS("模型 {0}: 沿用重建时 GPS 因子所用的米制坐标系 -- 缩放 {1}，半径 {2} m"),
+    ZH_HANT("模型 {0}: 沿用重建時 GPS 因子所用的公尺座標系 -- 縮放 {1}，半徑 {2} m"),
+    KO("모델 {0}: 재구성에 쓰인 GPS 인자의 미터 좌표계를 유지합니다 -- 배율 {1}, 반지름 {2} m"),
+    DE("Modell {0}: metrischer Rahmen der GPS-Faktoren beibehalten, mit denen die "
+       "Rekonstruktion gelöst wurde -- Maßstab {1}, Radius {2} m"),
+    FR("Modèle {0} : repère métrique des facteurs GPS de la reconstruction conservé -- "
+       "échelle {1}, rayon {2} m"),
+    ES("Modelo {0}: se conserva el marco métrico de los factores GPS con que se resolvió la "
+       "reconstrucción -- escala {1}, radio {2} m"),
+    PT("Modelo {0}: mantido o referencial métrico dos fatores GPS com que a reconstrução foi "
+       "resolvida -- escala {1}, raio {2} m"),
+    IT("Modello {0}: mantenuto il sistema metrico dei fattori GPS con cui è stata risolta la "
+       "ricostruzione -- scala {1}, raggio {2} m"),
+    NL("Model {0}: metrisch stelsel behouden van de GPS-factoren waarmee de reconstructie is "
+       "opgelost -- schaal {1}, straal {2} m"),
+    RU("Модель {0}: сохранена метрическая система GPS-факторов, с которыми решалась "
+       "реконструкция -- масштаб {1}, радиус {2} м"),
+    TR("Model {0}: yeniden yapılandırmanın çözüldüğü GPS faktörlerinin metrik çerçevesi "
+       "korundu -- ölçek {1}, yarıçap {2} m"));
+
 SS_MSG(metric_fail_pairs,
     EN("cameras with a metric position: {0}, need 3"),
     JA("メートル位置を持つカメラ: {0}、3 台必要です"),
@@ -3056,6 +3125,21 @@ SS_MSG(metric_fail_pairs,
     NL("camera's met een metrische positie: {0}, er zijn er 3 nodig"),
     RU("камер с метрической позицией: {0}, нужно 3"),
     TR("metrik konumu olan kamera: {0}, 3 gerekli"));
+
+SS_MSG(metric_fail_distinct,
+    EN("distinct metric positions among those cameras: {0} of {1}, need {2}"),
+    JA("それらのカメラのうち異なるメートル位置: {1} 台中 {0}、{2} 必要です"),
+    ZH_HANS("这些相机中不同的米制位置: {1} 台中 {0} 个，需要 {2} 个"),
+    ZH_HANT("這些相機中不同的公尺位置: {1} 台中 {0} 個，需要 {2} 個"),
+    KO("그 카메라들 중 서로 다른 미터 위치: {1} 대 중 {0}, {2} 개가 필요합니다"),
+    DE("verschiedene metrische Positionen unter diesen Kameras: {0} von {1}, benötigt werden {2}"),
+    FR("positions métriques distinctes parmi ces caméras : {0} sur {1}, il en faut {2}"),
+    ES("posiciones métricas distintas entre esas cámaras: {0} de {1}, hacen falta {2}"),
+    PT("posições métricas distintas entre essas câmeras: {0} de {1}, são precisas {2}"),
+    IT("posizioni metriche distinte tra quelle camere: {0} su {1}, ne servono {2}"),
+    NL("verschillende metrische posities onder die camera's: {0} van {1}, er zijn er {2} nodig"),
+    RU("различных метрических позиций среди этих камер: {0} из {1}, нужно {2}"),
+    TR("bu kameralar arasında farklı metrik konum: {1} içinde {0}, {2} gerekli"));
 
 SS_MSG(metric_fail_spread,
     EN("the metric positions do not spread out (radius {0} m); nothing to fit a scale to"),

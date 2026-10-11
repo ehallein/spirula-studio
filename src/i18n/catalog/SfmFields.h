@@ -3557,6 +3557,91 @@ SS_MSG(auto_resume_help,
     TR("Aynı ayarlarla yarıda kalan bir çalıştırmanın çıktı klasöründe bıraktığı "
        "öznitelikleri, çift listesini ve doğrulanmış çiftleri devral"));
 
+SS_MSG(reuse_features_help,
+    EN("The features already in the output folder: auto reuses them while the "
+       "settings that made them read the same, keep reuses them whatever made "
+       "them, redo extracts them again"),
+    JA("出力フォルダにすでにある特徴点の扱い：auto は作ったときの設定が同じなら使い、"
+       "keep は何で作られていても使い、redo は抽出し直します"),
+    ZH_HANS("输出文件夹里已有的特征：auto 在做它们的设置不变时沿用，keep 不论用什么做"
+            "的都沿用，redo 重新提取"),
+    ZH_HANT("輸出資料夾裡已有的特徵：auto 在做它們的設定不變時沿用，keep 不論用什麼做"
+            "的都沿用，redo 重新提取"),
+    KO("출력 폴더에 이미 있는 특징점: auto는 만든 설정이 같으면 다시 쓰고, keep은 "
+       "무엇으로 만들었든 다시 쓰며, redo는 다시 추출합니다"),
+    DE("Die Merkmale im Ausgabeordner: auto verwendet sie weiter, solange die "
+       "Einstellungen, die sie erzeugt haben, gleich lauten, keep verwendet sie "
+       "unabhängig davon weiter, redo extrahiert sie neu"),
+    FR("Les points déjà dans le dossier de sortie : auto les réutilise tant que "
+       "les réglages qui les ont faits sont les mêmes, keep les réutilise quoi "
+       "qui les ait faits, redo les extrait à nouveau"),
+    ES("Los rasgos que ya están en la carpeta de salida: auto los reutiliza "
+       "mientras los ajustes que los hicieron sean los mismos, keep los reutiliza "
+       "los haya hecho lo que sea, redo los vuelve a extraer"),
+    PT("Os pontos já na pasta de saída: auto reutiliza-os enquanto as definições "
+       "que os fizeram forem as mesmas, keep reutiliza-os seja o que for que os "
+       "fez, redo extrai-os de novo"),
+    IT("I punti già nella cartella di uscita: auto li riutilizza finché le "
+       "impostazioni che li hanno fatti restano le stesse, keep li riutilizza "
+       "comunque siano stati fatti, redo li estrae di nuovo"),
+    NL("De kenmerken die al in de uitvoermap staan: auto hergebruikt ze zolang de "
+       "instellingen waarmee ze gemaakt zijn gelijk blijven, keep hergebruikt ze "
+       "hoe ze ook gemaakt zijn, redo extraheert ze opnieuw"),
+    RU("Признаки, уже лежащие в папке вывода: auto использует их, пока "
+       "настройки, с которыми они сделаны, те же, keep использует их, чем бы они "
+       "ни были сделаны, redo извлекает заново"),
+    TR("Çıktı klasöründe zaten olan öznitelikler: auto onları yapan ayarlar aynı "
+       "kaldıkça yeniden kullanır, keep neyle yapılmış olursa olsun yeniden "
+       "kullanır, redo yeniden çıkarır"));
+
+SS_MSG(reuse_matches_help,
+    EN("The verified pairs already in matches.bin: auto reuses them while the "
+       "settings and the features that made them are the same, keep reuses them "
+       "over the same unchanged features whatever settings made them, redo "
+       "matches again"),
+    JA("matches.bin にすでにある検証済みペアの扱い：auto は作ったときの設定と特徴点が"
+       "同じなら使い、keep は特徴点が変わっていなければ設定にかかわらず使い、redo は"
+       "照合し直します"),
+    ZH_HANS("matches.bin 里已有的已验证像对：auto 在做它们的设置和特征不变时沿用，"
+            "keep 只要特征没变、不论设置都沿用，redo 重新匹配"),
+    ZH_HANT("matches.bin 裡已有的已驗證影像對：auto 在做它們的設定和特徵不變時沿用，"
+            "keep 只要特徵沒變、不論設定都沿用，redo 重新比對"),
+    KO("matches.bin에 이미 있는 검증된 쌍: auto는 만든 설정과 특징점이 같으면 다시 "
+       "쓰고, keep은 특징점이 그대로면 설정과 상관없이 다시 쓰며, redo는 다시 "
+       "정합합니다"),
+    DE("Die geprüften Paare in matches.bin: auto verwendet sie weiter, solange "
+       "Einstellungen und Merkmale, aus denen sie entstanden, gleich sind, keep "
+       "verwendet sie über denselben unveränderten Merkmalen unabhängig von den "
+       "Einstellungen weiter, redo ordnet neu zu"),
+    FR("Les paires vérifiées déjà dans matches.bin : auto les réutilise tant que "
+       "les réglages et les points qui les ont faites sont les mêmes, keep les "
+       "réutilise sur les mêmes points inchangés quels que soient les réglages, "
+       "redo apparie à nouveau"),
+    ES("Los pares verificados que ya están en matches.bin: auto los reutiliza "
+       "mientras los ajustes y los rasgos que los hicieron sean los mismos, keep "
+       "los reutiliza sobre los mismos rasgos sin cambios sean cuales sean los "
+       "ajustes, redo vuelve a emparejar"),
+    PT("Os pares verificados já em matches.bin: auto reutiliza-os enquanto as "
+       "definições e os pontos que os fizeram forem os mesmos, keep reutiliza-os "
+       "sobre os mesmos pontos inalterados sejam quais forem as definições, redo "
+       "emparelha de novo"),
+    IT("Le coppie verificate già in matches.bin: auto le riutilizza finché "
+       "impostazioni e punti che le hanno fatte restano gli stessi, keep le "
+       "riutilizza sugli stessi punti invariati qualunque siano le impostazioni, "
+       "redo confronta di nuovo"),
+    NL("De geverifieerde paren die al in matches.bin staan: auto hergebruikt ze "
+       "zolang de instellingen en kenmerken waarmee ze gemaakt zijn gelijk "
+       "blijven, keep hergebruikt ze over dezelfde ongewijzigde kenmerken wat de "
+       "instellingen ook zijn, redo koppelt opnieuw"),
+    RU("Проверенные пары, уже лежащие в matches.bin: auto использует их, пока "
+       "настройки и признаки, по которым они сделаны, те же, keep использует их "
+       "при тех же неизменных признаках при любых настройках, redo сопоставляет "
+       "заново"),
+    TR("matches.bin'de zaten olan doğrulanmış çiftler: auto onları yapan ayarlar "
+       "ve öznitelikler aynı kaldıkça yeniden kullanır, keep öznitelikler "
+       "değişmediyse ayarlar ne olursa olsun yeniden kullanır, redo yeniden "
+       "eşleştirir"));
+
 SS_MSG(check_help,
     EN("With --resume: report how far each model agrees with the two-view "
        "geometries it was built from, then exit without writing anything"),
@@ -3826,30 +3911,40 @@ SS_MSG(metric_gps_help,
        "`horizontal`, GPS yoksa ya da --metric-positions varsa `none` seçer"));
 
 SS_MSG(metric_max_error_frac_help,
-    EN("... or this fraction of the reference positions' RMS radius, whichever is larger, so "
-       "a long flight is not judged by a threshold made for a walk"),
-    JA("... または基準位置の RMS 半径のこの割合のうち大きいほう。長い飛行を徒歩用の閾値で"
-       "判定しないためです"),
-    ZH_HANS("……或参考位置 RMS 半径的这一比例，取较大者，这样长距离飞行不会按步行的阈值来判定"),
-    ZH_HANT("……或參考位置 RMS 半徑的這一比例，取較大者，這樣長距離飛行不會按步行的閾值來判定"),
-    KO("... 또는 기준 위치 RMS 반경의 이 비율 중 큰 쪽. 긴 비행을 도보용 문턱으로 판정하지 "
-       "않기 위해서입니다"),
-    DE("... oder dieser Anteil des RMS-Radius der Referenzpositionen, je nachdem, was größer "
-       "ist, damit ein langer Flug nicht nach einer Schwelle für einen Spaziergang beurteilt wird"),
-    FR("... ou cette fraction du rayon RMS des positions de référence, la plus grande des deux, "
-       "pour qu'un long vol ne soit pas jugé avec un seuil fait pour une marche"),
-    ES("... o esta fracción del radio RMS de las posiciones de referencia, la que sea mayor, para "
-       "que un vuelo largo no se juzgue con un umbral hecho para un paseo"),
-    PT("... ou esta fração do raio RMS das posições de referência, o que for maior, para que um "
-       "voo longo não seja julgado por um limiar feito para uma caminhada"),
-    IT("... o questa frazione del raggio RMS delle posizioni di riferimento, la maggiore delle "
-       "due, così un volo lungo non è giudicato con una soglia fatta per una passeggiata"),
-    NL("... of dit deel van de RMS-straal van de referentieposities, wat het grootst is, zodat "
-       "een lange vlucht niet met een drempel voor een wandeling wordt beoordeeld"),
-    RU("... или эта доля RMS-радиуса опорных позиций, что больше, чтобы длинный полёт не "
-       "судили по порогу для прогулки"),
-    TR("... ya da referans konumların RMS yarıçapının bu oranı, hangisi büyükse; uzun bir uçuş "
-       "yürüyüş için yapılmış bir eşikle yargılanmasın diye"));
+    EN("... or, with --metric-max-error above 0, this fraction of the reference positions' "
+       "RMS radius, whichever is larger, so a long flight is not judged by a threshold made "
+       "for a walk"),
+    JA("... または --metric-max-error が 0 より大きいとき、基準位置の RMS 半径のこの割合の"
+       "うち大きいほう。長い飛行を徒歩用の閾値で判定しないためです"),
+    ZH_HANS("……或（--metric-max-error 大于 0 时）参考位置 RMS 半径的这一比例，取较大者，"
+            "这样长距离飞行不会按步行的阈值来判定"),
+    ZH_HANT("……或（--metric-max-error 大於 0 時）參考位置 RMS 半徑的這一比例，取較大者，"
+            "這樣長距離飛行不會按步行的閾值來判定"),
+    KO("... 또는 --metric-max-error 가 0 보다 클 때 기준 위치 RMS 반경의 이 비율 중 큰 쪽. "
+       "긴 비행을 도보용 문턱으로 판정하지 않기 위해서입니다"),
+    DE("... oder, bei --metric-max-error über 0, dieser Anteil des RMS-Radius der "
+       "Referenzpositionen, je nachdem, was größer ist, damit ein langer Flug nicht nach einer "
+       "Schwelle für einen Spaziergang beurteilt wird"),
+    FR("... ou, avec --metric-max-error au-dessus de 0, cette fraction du rayon RMS des "
+       "positions de référence, la plus grande des deux, pour qu'un long vol ne soit pas jugé "
+       "avec un seuil fait pour une marche"),
+    ES("... o, con --metric-max-error por encima de 0, esta fracción del radio RMS de las "
+       "posiciones de referencia, la que sea mayor, para que un vuelo largo no se juzgue con un "
+       "umbral hecho para un paseo"),
+    PT("... ou, com --metric-max-error acima de 0, esta fração do raio RMS das posições de "
+       "referência, o que for maior, para que um voo longo não seja julgado por um limiar "
+       "feito para uma caminhada"),
+    IT("... o, con --metric-max-error sopra 0, questa frazione del raggio RMS delle posizioni "
+       "di riferimento, la maggiore delle due, così un volo lungo non è giudicato con una "
+       "soglia fatta per una passeggiata"),
+    NL("... of, bij --metric-max-error boven 0, dit deel van de RMS-straal van de "
+       "referentieposities, wat het grootst is, zodat een lange vlucht niet met een drempel "
+       "voor een wandeling wordt beoordeeld"),
+    RU("... или, при --metric-max-error больше 0, эта доля RMS-радиуса опорных позиций, что "
+       "больше, чтобы длинный полёт не судили по порогу для прогулки"),
+    TR("... ya da --metric-max-error 0'dan büyükken referans konumların RMS yarıçapının bu "
+       "oranı, hangisi büyükse; uzun bir uçuş yürüyüş için yapılmış bir eşikle yargılanmasın "
+       "diye"));
 
 SS_MSG(rigs_help,
     EN("Use the rigs --rig and the manifest define: one pose per frame, member extrinsics shared "
@@ -4015,29 +4110,29 @@ SS_MSG(final_free_rig_help,
 
 SS_MSG(metric_max_error_help,
     EN("Cameras farther than this many metres from the fitted position are outliers; 0 "
-       "chooses 5 for GPS and 0.5 for a positions file"),
-    JA("当てはめ位置からこのメートル数より離れたカメラを外れ値とします。0 なら GPS で 5、"
-       "位置ファイルで 0.5 を選びます"),
-    ZH_HANS("离拟合位置超过这么多米的相机算作外点; 0 表示 GPS 取 5、位置文件取 0.5"),
-    ZH_HANT("離擬合位置超過這麼多公尺的相機算作外點; 0 表示 GPS 取 5、位置檔取 0.5"),
-    KO("맞춘 위치에서 이 미터 수보다 먼 카메라는 이상치로 봅니다. 0 이면 GPS 는 5, 위치 파일은 "
-       "0.5 를 씁니다"),
+       "takes the radius from how far the positions scatter about the fit"),
+    JA("当てはめ位置からこのメートル数より離れたカメラを外れ値とします。0 なら位置の"
+       "当てはめに対するばらつきから半径を決めます"),
+    ZH_HANS("离拟合位置超过这么多米的相机算作外点; 0 表示按位置相对拟合的离散程度定半径"),
+    ZH_HANT("離擬合位置超過這麼多公尺的相機算作外點; 0 表示按位置相對擬合的離散程度定半徑"),
+    KO("맞춘 위치에서 이 미터 수보다 먼 카메라는 이상치로 봅니다. 0 이면 맞춘 결과에 대한 "
+       "위치의 퍼짐에서 반경을 정합니다"),
     DE("Kameras weiter als so viele Meter von der angepassten Position sind Ausreißer; 0 "
-       "wählt 5 für GPS und 0,5 für eine Positionsdatei"),
+       "nimmt den Radius aus der Streuung der Positionen um die Anpassung"),
     FR("Les caméras à plus de tant de mètres de la position ajustée sont aberrantes ; 0 "
-       "choisit 5 pour le GPS et 0,5 pour un fichier de positions"),
-    ES("Las cámaras a más de tantos metros de la posición ajustada son atípicas; 0 elige 5 "
-       "para GPS y 0,5 para un archivo de posiciones"),
-    PT("Câmeras a mais do que estes metros da posição ajustada são atípicas; 0 escolhe 5 "
-       "para GPS e 0,5 para um ficheiro de posições"),
-    IT("Le camere oltre questi metri dalla posizione stimata sono anomale; 0 sceglie 5 per "
-       "il GPS e 0,5 per un file di posizioni"),
-    NL("Camera's verder dan zoveel meter van de gefitte positie zijn uitschieters; 0 kiest 5 "
-       "voor GPS en 0,5 voor een positiebestand"),
+       "prend le rayon de la dispersion des positions autour de l'ajustement"),
+    ES("Las cámaras a más de tantos metros de la posición ajustada son atípicas; 0 toma el "
+       "radio de la dispersión de las posiciones en torno al ajuste"),
+    PT("Câmeras a mais do que estes metros da posição ajustada são atípicas; 0 toma o raio "
+       "da dispersão das posições em torno do ajuste"),
+    IT("Le camere oltre questi metri dalla posizione stimata sono anomale; 0 ricava il "
+       "raggio dalla dispersione delle posizioni attorno alla stima"),
+    NL("Camera's verder dan zoveel meter van de gefitte positie zijn uitschieters; 0 neemt "
+       "de straal uit de spreiding van de posities rond de fit"),
     RU("Камеры дальше такого числа метров от подогнанной позиции считаются выбросами; 0 "
-       "выбирает 5 для GPS и 0,5 для файла позиций"),
-    TR("Oturtulan konumdan bu kadar metreden uzak kameralar aykırıdır; 0, GPS için 5 ve "
-       "konum dosyası için 0,5 seçer"));
+       "берёт радиус из разброса позиций вокруг подгонки"),
+    TR("Oturtulan konumdan bu kadar metreden uzak kameralar aykırıdır; 0, yarıçapı "
+       "konumların oturtma etrafındaki saçılımından alır"));
 
 SS_MSG(telemetry_help,
     EN("A video whose IMU and GPS cover the images (Insta360 .insv, GoPro .360/.mp4, DJI .OSV, "

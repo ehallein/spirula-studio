@@ -2,7 +2,10 @@
 
 #include "app/gui/DatasetPrep.h"
 
+#include "app/CubeLut.h"
+#include "app/LidarDataset.h"
 #include "app/gui/DatasetRecord.h"
+#include "dense/Artifact.h"
 #include "app/gui/mask/MaskLayer.h"
 #include "sfm/core/Resume.h"
 
@@ -70,7 +73,7 @@ namespace gui {
 
 const char* const kVideoExtensions[kNumVideoExtensions] = {
     ".mp4", ".mov", ".mkv", ".webm", ".m4v", ".insv", ".osv", ".avi",
-    ".mts", ".m2ts", ".360", ".ts", ".wmv", ".lrv",
+    ".mts", ".m2ts", ".360", ".ts", ".wmv", ".lrv", ".prx",
 };
 
 bool is_image_file(const fs::path& p) {
@@ -613,7 +616,8 @@ bool is_pano360_path(const std::string& path) {
 }
 
 bool is_packed_lens_path(const std::string& path) {
-    return lower_ext(path) == ".insp" || lower_ext(path) == ".lrv";
+    const std::string e = lower_ext(path);
+    return e == ".insp" || e == ".lrv" || e == ".prx";
 }
 
 int probe_packed_lenses(const std::string& dir) {
@@ -866,8 +870,8 @@ std::vector<std::string> camera_group_models(const std::vector<PrepInput>& input
     return out;
 }
 
-// A camera .xml next to a point-cloud .ply, which is what MetashapeParser
-// probes for.
+// A camera .xml next to a point-cloud .ply, or a .psx project, which is what
+// MetashapeParser probes for.
 static bool metashape_export_here(const fs::path& p) {
     std::error_code ec;
     bool has_xml = false, has_ply = false;
@@ -876,6 +880,7 @@ static bool metashape_export_here(const fs::path& p) {
         if (!it->is_regular_file(ec)) continue;
         std::string e = it->path().extension().string();
         for (auto& c : e) c = (char)std::tolower((unsigned char)c);
+        if (e == ".psx") return true;
         has_xml = has_xml || e == ".xml";
         has_ply = has_ply || e == ".ply";
     }
@@ -942,7 +947,24 @@ WorkspaceState probe_workspace(const std::string& workspace,
                fs::exists(ws / "transforms.json", ec) ||
                colmap_model_here(ws) || metashape_export_here(ws);
     st.geometry = has_content(ws / "normals") || has_content(ws / "depths");
+    st.dense = spirula::dense::artifact_complete(ws.string(), true);
     st.record = fs::exists(ws / kDatasetRecordFile, ec);
+    const fs::path resume = ws / sfm::resume::kDir;
+    st.extracted = has_content(ws / "features") &&
+                   fs::exists(resume / sfm::resume::kExtractSig, ec);
+    if (st.extracted) {
+        const std::string key = sfm::resume::kSignedImages;
+        std::ifstream sig(resume / sfm::resume::kExtractSig);
+        for (std::string line; std::getline(sig, line);)
+            if (line.rfind(key, 0) == 0) st.extracted_images = line.substr(key.size());
+    }
+    st.matched = fs::exists(ws / "matches.bin", ec) &&
+                 fs::exists(resume / sfm::resume::kMatchSig, ec);
+    st.matching_part = fs::exists(resume / sfm::resume::kMatchJournal, ec);
+    app::lidar::AlignedWith aligned;
+    st.aligned = app::lidar::read_aligned_with(workspace, aligned);
+    st.aligned_clouds = aligned.clouds;
+    st.aligned_kept_frame = aligned.mode == app::lidar::AlignMode::Keep;
     return st;
 }
 
@@ -1477,6 +1499,23 @@ static bool lockstep_extraction(const PrepJob& job, const PrepInput& in, bool bu
     return builtin && job.sync_tracks;
 }
 
+// The built-in decoder names a frame by its source index; ffmpeg's fallback
+// numbers the candidates it resampled at the kept rate times the group (every
+// frame is not resampled, so there too the stem is the source index).
+static PrepCapture capture_of(const PrepJob& job, const PrepInput& in, bool builtin) {
+    const double fps = builtin ? 0.0 : (double)input_fps(job, in) * candidate_group(job, in);
+    return {in.subdir, in.path, fps, lockstep_extraction(job, in, builtin)};
+}
+
+PrepCapture video_capture(const PrepJob& job, const PrepInput& in) {
+    return capture_of(job, in, !job.force_external_decode && native_decode_reason().empty());
+}
+
+static bool same_path(const std::string& a, const std::string& b) {
+    std::error_code ec;
+    return fs::absolute(a, ec).lexically_normal() == fs::absolute(b, ec).lexically_normal();
+}
+
 bool DatasetPrep::extract_video(const PrepJob& job, const PrepInput& in,
                                 const std::string& images, PrepResult& out,
                                 std::string& error) {
@@ -1491,13 +1530,14 @@ bool DatasetPrep::extract_video(const PrepJob& job, const PrepInput& in,
             std::error_code ec;
             if (fs::is_directory(fs::path(images) / "cam1", ec))
                 out.per_folder_cameras = true;
-            // Kept frames of unknown provenance: the file's own rate is the
-            // built-in extractor's convention, and a wrong one is refused
-            // downstream by the gyro-against-poses check, not misused.
-            out.captures.push_back(
-                {in.subdir, in.path, 0.0,
-                 lockstep_extraction(job, in, !job.force_external_decode &&
-                                                  native_decode_reason().empty())});
+            // As the record says they were cut; with no record, as this build
+            // would cut them. A wrong rate is refused downstream by the
+            // gyro-against-poses check, not misused.
+            PrepCapture cap = video_capture(job, in);
+            for (const PrepCapture& c : job.recorded_captures)
+                if (c.subdir == in.subdir && same_path(c.path, in.path)) cap = c;
+            cap.path = in.path;
+            out.captures.push_back(cap);
             return split_packed_frames(in, images, out, error);
         }
     }
@@ -1506,7 +1546,7 @@ bool DatasetPrep::extract_video(const PrepJob& job, const PrepInput& in,
         !job.force_external_decode && native_decode_reason().empty();
     if (want_builtin) {
         if (extract_video_builtin(job, in, images, out, error)) {
-            out.captures.push_back({in.subdir, in.path, 0.0, lockstep_extraction(job, in, true)});
+            out.captures.push_back(capture_of(job, in, true));
             return split_packed_frames(in, images, out, error);
         }
         if (_cancel.load()) return false;
@@ -1517,13 +1557,7 @@ bool DatasetPrep::extract_video(const PrepJob& job, const PrepInput& in,
     const bool ok = in.pano360.valid() && job.pano.mode != app::Pano360Mode::Off
                         ? extract_360_ffmpeg(job, in, images, out, error)
                         : extract_video_ffmpeg(job, in, images, out, error);
-    // The stems are candidate numbers, and the candidates were resampled at
-    // the kept rate times the group -- which is the rate that times them. Every
-    // frame is not resampled, so its stems are source indices as above.
-    if (ok)
-        out.captures.push_back({in.subdir, in.path,
-                                (double)input_fps(job, in) * candidate_group(job, in),
-                                lockstep_extraction(job, in, false)});
+    if (ok) out.captures.push_back(capture_of(job, in, false));
     return ok && split_packed_frames(in, images, out, error);
 }
 
@@ -1555,6 +1589,7 @@ static bool builtin_job(const PrepJob& job, const PrepInput& in,
     fx.adaptive = job.adaptive_fps && !every;
     fx.adaptive_range = job.adaptive_range;
     fx.auto_rotate = job.auto_rotate;
+    fx.lut = input_lut(job, in);
     fx.quality = 95;
     if (in.pano360.valid()) {
         const std::vector<app::Pano360View> views =
@@ -1718,6 +1753,20 @@ bool DatasetPrep::extract_video_builtin(const PrepJob& job, const PrepInput& in,
 #endif
 }
 
+bool DatasetPrep::append_lut_filter(const PrepJob& job, const PrepInput& in,
+                                    std::string& chain, std::string& error) {
+    const std::string lut = input_lut(job, in);
+    if (lut.empty()) return true;
+    // ffmpeg's own lut3d reads the file, but its complaint is buried in the
+    // child's output; one read here says which file and why.
+    std::string file;
+    if (!app::cube_lut_cached(lut, error) || !app::cube_lut_file(lut, file, error))
+        return false;
+    log(fmt(lmsg::video_lut_applied, {app::lut_display_name(lut)}), false);
+    chain += (chain.empty() ? "" : ",") + app::ffmpeg_lut3d_filter(file);
+    return true;
+}
+
 bool DatasetPrep::extract_video_ffmpeg(const PrepJob& job, const PrepInput& in,
                                        const std::string& images,
                                        PrepResult& out, std::string& error) {
@@ -1778,15 +1827,17 @@ bool DatasetPrep::extract_video_ffmpeg(const PrepJob& job, const PrepInput& in,
         remove_tree(cand);
         std::error_code ec;
         fs::create_directories(cand, ec);
-        char vf[64];
-        std::snprintf(vf, sizeof vf, "fps=%g", (double)input_fps(job, in) * group);
+        char rate[64];
+        std::snprintf(rate, sizeof rate, "fps=%g", (double)input_fps(job, in) * group);
+        std::string vf = every ? std::string() : std::string(rate);
+        if (!append_lut_filter(job, in, vf, error)) return false;
         // ffmpeg turns the picture by the container's matrix unless told not
         // to, which is what the built-in decoder's auto_rotate matches.
         std::vector<std::string> argv{job.ffmpeg_exe, "-nostdin", "-y"};
         if (!job.auto_rotate) argv.push_back("-noautorotate");
         argv.insert(argv.end(), {"-i", track_path});
         if (every) append_every_frame_args(argv, job.max_frames);
-        else argv.insert(argv.end(), {"-vf", vf});
+        if (!vf.empty()) argv.insert(argv.end(), {"-vf", vf});
         argv.insert(argv.end(), {"-qscale:v", "2", (cand / "c_%06d.jpg").string()});
         const int max_frames = job.max_frames;
         int rc = exec(argv, [&progress, window, max_frames](const std::string& line) {
@@ -1943,9 +1994,11 @@ bool DatasetPrep::extract_360_ffmpeg(const PrepJob& job, const PrepInput& in,
     const fs::path cand = ws / "frames_tmp";
     remove_tree(cand);
     fs::create_directories(cand, ec);
-    char pre[64] = "";
+    char rate[64] = "";
     if (!every)
-        std::snprintf(pre, sizeof pre, "fps=%g", (double)input_fps(job, in) * group);
+        std::snprintf(rate, sizeof rate, "fps=%g", (double)input_fps(job, in) * group);
+    std::string pre = rate;
+    if (!append_lut_filter(job, in, pre, error)) return false;
     const std::string graph = app::pano360_graph(in.pano360, pre);
     // A 360 capture's geometry is the EAC layout, not the display matrix: the
     // built-in path leaves it alone and so must this one.

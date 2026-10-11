@@ -181,6 +181,14 @@ Two devices deserve naming:
   (7e-5 relative, against 1e-11 on hardware). The mapper's own checks still
   pass; treat llvmpipe as a way to run the pipeline, not to trust its last bits.
 
+No shader here uses subgroup operations, so the module runs at whatever width
+the driver picks (RADV: 64). Where the device offers both 32 and 64 (AMD
+RDNA), `rdnaSubgroupWidth` in `vk/VkContext.h` pins the kernels whose widths
+measured apart: blur, orientation and descriptor at 32 and the rest of SIFT
+and the matcher at 64 took extraction 7.9% under RADV's all-64 (150
+1080x1440 frames on a Ryzen 7000 iGPU, features bit-identical). Bundle
+adjustment measured within 1% either way and is left to the driver.
+
 ## Layout
 
 ```
@@ -537,8 +545,14 @@ format (`image_name X Y Z` per line, any right-handed metric frame — a LiDAR
 trajectory, ARKit, RTK); the second reads each registered image's own EXIF GPS
 and converts it to a local east-north-up frame. Either way a similarity is
 fitted from the camera centres with LO-RANSAC over the same `estimateSim3` that
-model merging uses, and `--metric-max-error` is its inlier radius in metres (0
-picks 5 for GPS, 0.5 for a positions file).
+model merging uses, and `--metric-max-error` is its inlier radius in metres. 0,
+the default, takes the radius from the positions themselves: 3.37 sigmas per
+axis (3.03 on a level fit) of their least-median-of-squares scatter about the
+fit, then of the inliers' own, and never under 0.5 % of their spread. An RTK
+flight then judges by centimetres and a phone by metres; a fixed radius is
+either blind on the one or refuses the other. Such a fit needs four distinct
+fixes (five for a full fit): a bracketing phone repeats each fix five times, and
+two fixes fit a level similarity exactly, with a scatter of zero.
 
 `--metric-gps` takes `none`, `horizontal`, `full` or `auto` (the default, in the
 CLI and the GUI), and the difference is the altitude. `auto` picks per capture,
@@ -658,7 +672,9 @@ future sensor implements the same way (`core/PriorSource.h`;
   `--metric-gps none`, which leaves the GPS to pairing alone. Every gauge
   quantity is re-estimated from the poses before each solve and frozen inside
   the factors, so the solver carries no global parameter and the model stays
-  in its own gauge; the finishing gauge fit above then runs as before.
+  in its own gauge; the finishing gauge fit above then runs as before, and
+  where its metric fit is refused, the GPS frame those solves held -- refitted
+  on the final poses -- is kept instead of the normalized one.
 - **Pairing** (`--sensor-pairs`, off): images the GPS puts within
   `--sensor-pair-radius` metres (20) of each other are matched whatever the
   shortlist thought.
@@ -701,7 +717,8 @@ recorded but its `post` reading is never filled -- that model's BA is the caller
 joint solve, not one this check runs itself.
 
 The sources run in order -- the video's sensors, the recorded attitude, a
-metric reference, the fallback -- and read each other: `gauge.txt`'s two bits
+metric reference (else the GPS frame mapping held), the fallback -- and read
+each other: `gauge.txt`'s two bits
 are the state as well as the record, so a reference is not fitted over a model
 the sensors already made metric, the attitude does not re-level a model the
 sensors levelled, `horizontal` skips its own upright pre-transform where either
@@ -749,8 +766,8 @@ error.
 pair on, instead of after enough frames registered each lens on its own.
 `kind: dual-fisheye` (`--rig dual-fisheye=...`) says the first two members are
 the back-to-back lenses of one 360 camera: the second turned 180 degrees about
-the image's vertical, refined in all 6 DOF; `refine: axial` holds the baseline
-to the lens's optical axis.
+the image's vertical, its rotation refined and its baseline held to the lens's
+optical axis (`refine: axial`).
 Insta360 X, DJI Osmo 360 and a PortalCam's two fisheyes all calibrate within
 0.8-1.4 degrees of that rotation, so it is refined; the Osmo and the PortalCam,
 measured against something metric, put the baseline within a millimetre of
@@ -1075,6 +1092,57 @@ which now exists on both commands. And `auto` accepts every advanced flag
 `extract`, `match` and `map` accept, since it runs those stages — a run can be
 tuned without decomposing it into three commands, and the GUI's editor has one
 command's worth of fields to show.
+
+## Memory on a large capture
+
+What grows with the capture, and what each costs, on a 4000-image
+dual-fisheye video (`--quality high`: 31.7M features, 225M verified matches,
+16M observations in the last bundle adjustment):
+
+- **Matching** reads descriptors where they lie: `loadFeatureDir` maps each
+  feature file (`FeatureSet::desc_map`) instead of copying 128 bytes a
+  feature into the heap, so they are page cache the OS can drop and read back
+  rather than 4 GB that has to fit; the matcher's device copy has its own
+  bound (`descriptor_budget_bytes`). Pair selection's shortlist pass scores a
+  block of rows at a time and keeps each image's best partners in a bounded
+  heap (`TopPartners`), `n x k` edges where it held all `n^2/2` pairs twice --
+  2 GB at 12k images, 8 GB at 24k. `matches.bin` comes out byte for byte the
+  same either way.
+- **Each verified match** costs 8 bytes in its pair's list (`FeatureMatch`
+  keeps no descriptor distance; only a matcher's own cap ever read one) and 8
+  in the correspondence graph (two one-word entries, `CorrespondenceGraph.h`),
+  where it cost 12 and 16. Past 256 MB each, both then leave the heap: the
+  pair lists and the graph are written to files in the workspace
+  (`.spirula-matches.spill`, `.spirula-graph-N.spill`) and mapped back
+  (`core/Spill.h`, `MatchList`, `CorrespondenceGraph::spill`). Neither is
+  written again, so while memory lasts the page cache holds them and nothing
+  slows down; when it does not, the OS reads pages back instead of the run
+  failing. On Linux the files are gone as soon as they are mapped; elsewhere
+  they go when the run ends.
+- **The mapper's undo snapshot** (`checkedRefine`) copies registered images
+  without their keypoints, and a model snapshot for output (`registeredCopy`)
+  never copies the unregistered images it would then drop.
+- **A device bundle adjustment** frees its ~55 bytes an observation of host
+  tables once they are uploaded; a fall to the host rebuilds them
+  (`ba/README.md`, "Watchdog").
+- **VRAM** is the bundle adjustment's: `ba/README.md`, "Buffers past 4 GB, and
+  compact Jacobians". Its Jacobians are split so no binding passes the
+  device's limit, which on NVIDIA used to corrupt every solve past a 4 GB
+  `Jc` silently, and are stored at fp32 when a solve would not otherwise fit.
+
+On that capture the mapping run's peak heap went from 11.4 GB to 5.1 GB
+(another 4 GB of mapped file pages are resident while memory is free) and VRAM
+stayed 7 GB; with the host-side changes alone, a 300-image subset of it writes
+a byte-identical model (`--ba-real cpu`, the deterministic path) in 1.07 GB
+where it took 1.27.
+
+Three times longer -- every frame of a 6290-frame Osmo 360 walk, 12580 images,
+757M verified matches, 54M observations in the last solves, RTX 5070 (12 GB),
+mapping in a 28 GB memory cgroup without swap -- the run before these changes
+was killed at 28 GB of heap 4566 images in. Now all 12580 register in one model
+(0.62 px), in 1 h 31 of mapping: the heap stays under 14 GB, solves past 29M
+observations take the fp32 Jacobians, and only the last, at 53.4M and up, go to
+the host, where it peaks at 22.7 GB.
 
 ## Tests
 

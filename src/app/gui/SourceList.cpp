@@ -1,6 +1,7 @@
 // SourceList.cpp -- see SourceList.h.
 
 #include "app/gui/SourceList.h"
+#include "app/LogLuts.h"
 #include "app/gui/RigGuess.h"
 
 #include <algorithm>
@@ -150,6 +151,9 @@ void probe_sources(std::vector<PrepInput>& sources,
             source_pixel_size(s, ffmpeg_exe, w, h))
             set_packed_lenses(s, w, h);
     }
+    for (PrepInput& s : sources)
+        if (s.is_video) s.lut_detected = app::detect_log_lut(s.path);
+    normalize_source_luts(sources);
 }
 
 
@@ -404,6 +408,18 @@ void normalize_source_fps(std::vector<PrepInput>& sources, float& video_fps) {
 }
 
 
+void normalize_source_luts(std::vector<PrepInput>& sources) {
+    for (size_t i = 0; i < sources.size(); i++) {
+        PrepInput& s = sources[i];
+        if (!s.is_video || s.lut.empty()) continue;
+        const std::string chosen = s.lut;
+        s.lut.clear();
+        if (input_lut(sources, i) != (chosen == kLutNone ? std::string() : chosen))
+            s.lut = chosen;
+    }
+}
+
+
 void apply_lens_to_sources(std::vector<PrepInput>& sources, SfmJob& sfm,
                            const std::string& model) {
     sfm.camera_model = model;
@@ -492,7 +508,7 @@ void dataset_adapt_preset(const std::string& preset,
     if (preset != "360-camera" || sources.empty()) return;
     // A packed dual-lens file (.insv/.360) is already handled: the pano plan
     // warps it into views and decides their lens, which is not this question.
-    // An .insp or .lrv measures 2:1 and is two fisheye circles, not a panorama.
+    // An .insp, .lrv or .prx measures 2:1 and is two fisheye circles, not a panorama.
     if (any_pano360(sources)) return;
     for (const PrepInput& s : sources)
         if (has_fisheye_lens(s)) return;

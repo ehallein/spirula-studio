@@ -471,10 +471,6 @@ std::string SfmConfig::finalize(uint32_t cmd) {
                "gauge; pass one";
     if (gps && image_dir.empty() && !(cmd & CMD_AUTO))
         return "--metric-gps reads each image's EXIF, so it needs --images";
-    // GPS is metres-accurate and a positions file is usually centimetres, so
-    // one default cannot serve both; 0 means "the one for this source".
-    if (metric_max_error == 0)
-        metric_max_error = metric_gps != "none" && metric_positions.empty() ? 5.0 : 0.5;
     if (!telemetry.empty()) {
         bool listed = false;
         for (const TelemetryInput& t : telemetry_inputs)
@@ -658,6 +654,21 @@ std::string stageSignature(const SfmConfig& cfg, uint32_t cmd) {
             out += "sequence ";
             for (size_t m = 0; m < d.members.size(); m++)
                 out += (m ? "," : "") + d.members[m];
+            out += "\n";
+        }
+    // A rig adds its mates to the pairs that verified (sfm/feature/RigPairs.h):
+    // which images share a frame, and which way each lens faces.
+    if ((cmd & CMD_MAP) || ((cmd & CMD_MATCH) && cfg.rig_pairs))
+        for (const RigDef& d : cfg.rigs) {
+            out += "rig " + d.kind + ":";
+            for (size_t c = 0; c < d.captures.size(); c++)
+                out += (c ? "," : "") + d.captures[c];
+            for (const RigMemberDef& m : d.members) {
+                out += " " + m.prefix;
+                if (!m.has_ext) continue;
+                out += "=";
+                appendParams(std::vector<double>(m.ext.R.begin(), m.ext.R.end()));
+            }
             out += "\n";
         }
     return out;

@@ -175,7 +175,7 @@ struct SfmConfig {
     // tilt left to the cameras), "full" (altitude as well), or "auto", which
     // resolves per capture before anything reads it (applyMetricGpsAuto).
     std::string metric_gps = "auto";
-    double metric_max_error = 0;        // metres; 0 resolves per source
+    double metric_max_error = 0;        // metres; 0 from the positions' own scatter
     // The camera attitude each image records (map/AttitudeGauge.h): "auto"
     // takes up and north, "up" the tilt alone, "none" ignores it.
     std::string exif_attitude = "auto";
@@ -196,9 +196,9 @@ struct SfmConfig {
     bool level_erp = true;
     double sensor_pair_radius = 20.0;
     double sensor_max_dt = 3.0;   // seconds a gyro rotation prior may span
-    // Cameras farther from the metric fit than this fraction of the reference
-    // positions' RMS radius are outliers too, so a kilometre-long flight is
-    // not judged by a threshold made for a walk (map/MetricGauge.h).
+    // Beside a fixed metric_max_error: cameras farther from the metric fit than this
+    // fraction of the reference positions' RMS radius are outliers too, so a long
+    // flight is not judged by a threshold made for a walk (map/MetricGauge.h).
     double metric_max_error_frac = 0.03;
     // Rigs (sfm/core/Rig.h): --rig and the manifest, resolved against the image
     // names once they are known. `final_free_rig` runs one last bundle
@@ -222,6 +222,11 @@ struct SfmConfig {
     // workspace -- the feature files it wrote, the pair list it chose, the pairs
     // verification finished (sfm/core/Resume.h). Off starts every stage over.
     bool reuse = true;
+    // Per stage, with `reuse` on: `keep` takes features/ or matches.bin as they
+    // are, whatever made them, and records them as made with these settings;
+    // `redo` makes them again even when they are current.
+    std::string reuse_features = "auto";
+    std::string reuse_matches = "auto";
 
     // Runtime.
     int threads = 0;           // host worker pools; 0 = hardware_concurrency
@@ -635,6 +640,10 @@ struct SfmConfig {
     F(feature_dir, "features", CMD_MAP, Tier::Advanced, "input", 0, 0, "", feature_dir)            \
     F(resume, "resume", CMD_MAP, Tier::Advanced, "input", 0, 0, "", resume)                        \
     F(reuse, "resume", CMD_AUTO, Tier::Basic, "input", 0, 0, "", auto_resume)                      \
+    F(reuse_features, "reuse-features", CMD_AUTO, Tier::Advanced, "input", 0, 0, "auto|keep|redo", \
+      reuse_features)                                                                              \
+    F(reuse_matches, "reuse-matches", CMD_AUTO, Tier::Advanced, "input", 0, 0, "auto|keep|redo",   \
+      reuse_matches)                                                                               \
     F(check, "check", CMD_MAP, Tier::Advanced, "input", 0, 0, "", check)                           \
     /* ---- runtime ---- */                                                                        \
     F(threads, "threads", CMD_AUTO | CMD_MATCH | CMD_MAP, Tier::Advanced, "runtime", 0, 4096, "",  \

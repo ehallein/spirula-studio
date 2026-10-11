@@ -15,8 +15,10 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -84,6 +86,27 @@ ColmapPoints3D                  read_points3D_text(const std::string& recon_dir)
 // vertex element of zero rows reads as an empty cloud.
 ColmapPoints3D read_ply_points(const std::string& path);
 
+// The vertex element of a PLY held in memory, in the formats above, walked
+// row by row. NerfstudioParser.cpp; `what` names the source in errors.
+class PlyVertexReader {
+public:
+    PlyVertexReader(std::string bytes, std::string what);
+    int64_t count() const { return count_; }
+    int column(const char* name) const;   // -1 when the vertex has none
+    bool is_float(int column) const;
+    // row(v) once per vertex, v[k] the value of column cols[k].
+    void each(const std::vector<int>& cols,
+              const std::function<void(const double*)>& row) const;
+
+private:
+    std::string bytes_, what_;
+    size_t data_ = 0;
+    int64_t count_ = 0;
+    bool binary_ = false;
+    std::vector<std::string> names_;
+    std::vector<uint8_t> types_;
+};
+
 
 // The exotic camera a fitted camera stands in for, so the re-distort kernel
 // can evaluate the true source projection rather than an approximation of it.
@@ -147,9 +170,13 @@ struct DatasetParserConfig {
     float outlier_threshold = std::numeric_limits<float>::infinity();
 
     // Which point of the raw frame becomes the training frame's origin: a
-    // dsparse::CenterMode name. Computed over ALL post-outlier frames and every
-    // seed point, in double, before anything is narrowed to float.
+    // dsparse::CenterMode name or `auto` (dsparse::resolve_scene_center). Over ALL
+    // post-outlier frames and every seed point, in double, before any narrowing.
     std::string center_mode = "none";
+    float center_auto_threshold = 20.0f;
+    // Set: the centre a run already chose (its scene_transform.json), taken as
+    // is under the name center_mode, which must then not be `auto`.
+    std::optional<std::array<double, 3>> center;
 
     // Pixel size of an image file (data/ImageProbe.h). Set: every camera trains
     // at its own image's resolution. Null: a caller with no decoders -- the
@@ -161,10 +188,9 @@ struct DatasetParserConfig {
     float       train_resolution_divisor = 0.0f;
     std::string downscale_rounding_mode = "floor";   // floor | ceil | round
 
-    // Metashape inputs (parse_metashape_dataset). Relative paths resolve
-    // against the dataset dir; empty = auto-detect a unique candidate in the
-    // dataset dir (.psx is optional -- used only to disambiguate camera ->
-    // image filename matching).
+    // Metashape inputs, relative to the dataset dir; empty = its unique
+    // candidate. With an .xml the .psx only disambiguates image filenames;
+    // without one the .psx project itself is read.
     std::string metashape_xml;
     std::string metashape_ply;
     std::string metashape_psx;
@@ -225,10 +251,13 @@ struct ParsedDataset {
     ColmapPoints3D           points;
 
     // p_train = p_raw - center, where p_raw is the frame the files came in
-    // (COLMAP's own, or nerfstudio's with applied_transform undone). Zero
-    // unless DatasetParserConfig::center_mode asked for one.
+    // (COLMAP's own, or nerfstudio's with applied_transform undone).
+    // center_mode names the statistic it is, never `auto`.
     std::array<double, 3>    center{0.0, 0.0, 0.0};
     std::string              center_mode = "none";
+
+    // Pre-applied raw frame -> stored file frame; identity except transforms.json's applied_transform.
+    std::array<double, 16>   raw_to_file{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 
     // 1 / scale_factor of the would-be normalized frame. Computed over ALL
     // frames, before the eval_mode subset is dropped.
@@ -267,17 +296,20 @@ ParsedDataset parse_metashape_dataset(const std::string& dataset_dir,
                                       const DatasetParserConfig& cfg);
 
 // Nerfstudio back-end over an already-built transforms.json-shaped meta
-// (NerfstudioParser.cpp; used by the Metashape front-end).
+// (NerfstudioParser.cpp; used by the Metashape front-end). A non-null
+// `points` is the seed cloud in the meta's frame, in place of its ply_file_path.
 struct JsonValue;
 ParsedDataset parse_nerfstudio_meta(const JsonValue& meta,
                                     const std::string& dataset_dir,
-                                    const DatasetParserConfig& cfg);
+                                    const DatasetParserConfig& cfg,
+                                    const ColmapPoints3D* points = nullptr);
 
-// The Metashape front-end's half: the XML read as that same meta. Exposed so
-// an edited reconstruction can be written out as the Nerfstudio dataset the
-// Metashape path already turns it into, rather than a second conversion.
+// The Metashape front-end's half, exposed so an edited reconstruction is
+// written out as the Nerfstudio dataset it already turns into. A lone .psx
+// has no cloud file to name: its tie points come back in `psx_points`.
 JsonValue metashape_meta(const std::string& dataset_dir,
-                         const DatasetParserConfig& cfg);
+                         const DatasetParserConfig& cfg,
+                         ColmapPoints3D* psx_points = nullptr);
 
 // Which directory under `dataset_dir` holds the COLMAP model the parser would
 // read, "" when none does; `points_text` reports the points3D spelling. One
@@ -394,6 +426,11 @@ void train_to_normalized_inverse(const ParsedDataset& ds, double out[16]);
 // Every centering mode over a parsed dataset, in its NORMALIZED frame --
 // which is what both viewers navigate.
 CenterTable scene_centers(const ParsedDataset& ds);
+
+// The parse's origin over c2w [N,3,4] and the seed points: cfg.center when set,
+// else what cfg.center_mode resolves to.
+ResolvedCenter parse_center(const DatasetParserConfig& cfg, const double* c2w,
+                            int64_t n, const ColmapPoints3D& points);
 
 // eval_mode subset over N sorted frames, honouring cfg.split; identity for
 // "all". `names` are image filenames (used by eval_mode="filename").

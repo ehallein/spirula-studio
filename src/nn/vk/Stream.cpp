@@ -1,13 +1,16 @@
 #include "nn/vk/Stream.h"
+#include "nn/vk/StreamTesting.h"
 
 #include "nn/core/Error.h"
 #include "nn/core/Log.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <map>
 #include "core/Env.h"
+#include "core/GpuStall.h"
 #include "core/SubmitBudget.h"
 
 namespace nn {
@@ -22,6 +25,10 @@ bool debug_sync_enabled() {
 }
 
 namespace {
+
+// Set only by testing::override_work_cap; negative means the measured budget.
+std::atomic<double> g_cap_override{-1};
+
 constexpr VkDeviceSize kStagingBytes = 32ull << 20;   // upload/download chunk
 constexpr VkDeviceSize kParamsRingBytes = 1ull << 20;  // oversized param structs
 constexpr uint32_t     kMaxQueries = 8192;
@@ -67,6 +74,7 @@ struct Stream::Impl {
     std::map<std::string, std::pair<uint64_t, double>> prof;  // name -> (n, ms)
 
     bool initialized = false;
+    bool drain_failed = false;
 
     void init();
     void resolveQueries();
@@ -94,9 +102,7 @@ void Stream::Impl::init() {
     Context& ctx = Context::get();
 
     // Allocator::free calls this before destroying a buffer.
-    set_drain_hook([] {
-        if (Stream::get().impl_) Stream::get().sync();
-    });
+    set_drain_hook([] { Stream::get().drain(); });
 
     VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -145,7 +151,7 @@ void Stream::shutdown() {
     Stream& s = get();
     if (!s.impl_) return;
     if (Context::initialized()) {
-        s.sync();
+        s.drain();
         // Release the drain hook and the buffers BEFORE the objects it needs:
         // Allocator::free would otherwise call back into a Stream whose
         // semaphore and command pool are already gone.
@@ -168,6 +174,28 @@ void Stream::shutdown() {
 // Recording
 // ================
 
+namespace {
+
+void wait_timeline(const Context& ctx, VkSemaphore timeline, const uint64_t* value) {
+    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wi.semaphoreCount = 1;
+    wi.pSemaphores = &timeline;
+    wi.pValues = value;
+    spirula::GpuStallWatch watch(std::strcmp(ctx.info().type, "cpu") == 0);
+    for (;;) {
+        const VkResult r = vkWaitSemaphores(ctx.device(), &wi, spirula::GpuStallWatch::kSliceNs);
+        if (r == VK_SUCCESS) return;
+        if (r != VK_TIMEOUT) NN_VK_CHECK(r);
+        uint64_t current = 0;
+        NN_VK_CHECK(vkGetSemaphoreCounterValue(ctx.device(), timeline, &current));
+        if (watch.stalled(current))
+            ::nn::fail("the GPU stopped responding: no work finished for a minute (the driver may have "
+                       "reset it, often after running out of GPU memory; SS_GPU_STALL_SECONDS sets the wait)");
+    }
+}
+
+}  // namespace
+
 VkCommandBuffer Stream::begin() {
     Impl& s = impl();
     if (s.recording) return s.cbs[s.cur];
@@ -178,11 +206,7 @@ VkCommandBuffer Stream::begin() {
         uint64_t v = 0;
         vkGetSemaphoreCounterValue(ctx.device(), s.timeline, &v);
         if (v < s.cb_value[s.cur]) {
-            VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-            wi.semaphoreCount = 1;
-            wi.pSemaphores = &s.timeline;
-            wi.pValues = &s.cb_value[s.cur];
-            NN_VK_CHECK(vkWaitSemaphores(ctx.device(), &wi, UINT64_MAX));
+            wait_timeline(ctx, s.timeline, &s.cb_value[s.cur]);
         }
         s.harvest(s.cur);
     }
@@ -266,7 +290,14 @@ void Stream::Impl::harvest(int slot) {
     slot_work[slot] = 0;
 }
 
-double Stream::workCap() { return impl().budget.limit(); }
+double Stream::workCap() {
+    const double pinned = g_cap_override.load();
+    return pinned >= 0 ? pinned : impl().budget.limit();
+}
+
+namespace testing {
+void override_work_cap(double cap) { g_cap_override.store(cap); }
+}  // namespace testing
 
 void Stream::sync() {
     Impl& s = impl();
@@ -276,14 +307,21 @@ void Stream::sync() {
     uint64_t v = 0;
     vkGetSemaphoreCounterValue(ctx.device(), s.timeline, &v);
     if (v < s.submitted) {
-        VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-        wi.semaphoreCount = 1;
-        wi.pSemaphores = &s.timeline;
-        wi.pValues = &s.submitted;
-        NN_VK_CHECK(vkWaitSemaphores(ctx.device(), &wi, UINT64_MAX));
+        wait_timeline(ctx, s.timeline, &s.submitted);
     }
     for (int i = 0; i < Impl::kRing; ++i) s.harvest(i);
     s.resolveQueries();
+}
+
+// The failure was already thrown to the operation that met it; teardown only logs.
+void Stream::drain() noexcept {
+    if (!impl_ || impl_->drain_failed) return;
+    try {
+        sync();
+    } catch (const std::exception& e) {
+        impl_->drain_failed = true;
+        NN_LOG_ERROR("[vk] %s; releasing GPU memory without waiting for it\n", e.what());
+    }
 }
 
 void Stream::waitOn(VkSemaphore sem, uint64_t value) {
@@ -345,7 +383,7 @@ void Stream::dispatch(const char* entry, const SpecList& spec, uint32_t gx, uint
         NN_LOG_ERROR("[ssam-sync] %s (%u,%u,%u)...\n", entry, gx, gy, gz);
 
     VkPipeline pipe = Pipelines::get().acquire(entry, spec);
-    const double cap = s.budget.limit();
+    const double cap = workCap();
     if (s.recording && s.recorded > 0 && s.work + work > cap) flush();
     VkCommandBuffer cb = begin();
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);

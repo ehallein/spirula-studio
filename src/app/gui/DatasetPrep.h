@@ -19,6 +19,7 @@
 #include "app/gui/FilmReel.h"
 #include "app/gui/PrepProgress.h"
 
+#include <cstddef>
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -88,6 +89,9 @@ inline std::string rig_letter(int letter) {
 // else, a rate of 0 is every frame.
 inline constexpr float kFpsEveryFrame = -1.0f;
 
+// PrepInput::lut for "no LUT", where empty would find one (input_lut).
+inline constexpr const char* kLutNone = "none";
+
 // One thing the user picked: a video file, or a folder of photos. A job holds
 // a list of them, because a capture is often shot as several clips, or on a rig
 // whose lenses each write their own file -- and those only reconstruct together
@@ -125,6 +129,12 @@ struct PrepInput {
     // as several clips is rarely shot at one pace, and a clip walked through
     // slowly wants fewer frames than the one that ran past the same wall.
     float fps = 0.0f;
+    // The colour LUT baked into this video's frames as they are extracted: a
+    // spec (app/CubeLut.h), kLutNone, or empty for automatic (input_lut).
+    std::string lut;
+    // The built-in the file's own metadata asks for (app::detect_log_lut).
+    // Probed, never saved.
+    std::string lut_detected;
     // The photos were taken one after another and named in that order, so the
     // reconstruction may trust neighbouring files first (a video's frames
     // always are; SfmRunner::build_sequences).
@@ -140,7 +150,7 @@ struct PrepInput {
     // Set instead when the file says it IS a 360 packing this build cannot
     // place, for the line that says its tracks are being left as they are.
     bool pano360_unsupported = false;
-    // Fisheye circles side by side in each frame of a .lrv, or each .insp of
+    // Fisheye circles side by side in each frame of a .lrv / .prx, or each .insp of
     // a folder (app::packed_lens_count); two are cut apart into cam0/, cam1/.
     // 0 = not such an input, or not measured yet.
     int packed_lenses = 0;
@@ -219,6 +229,17 @@ inline constexpr int kNumPhotoImports = 4;
 // photometric loss can tell from sensor noise.
 inline constexpr int kPhotoJpegQuality = 95;
 
+// A video the run extracted frames from, for the manifest's `captures`:
+// the stems carry the source frame index (fps 0, the file's own rate) or,
+// after the ffmpeg fallback, the kept-frame count at `fps`.
+struct PrepCapture {
+    std::string subdir;
+    std::string path;
+    double fps = 0;
+    // Every track kept the same instants, so the frames of one stem are a rig.
+    bool lockstep = false;
+};
+
 struct PrepJob {
     std::vector<PrepInput> inputs;   // in the order the user added them
     std::string workspace;           // output dataset dir (created)
@@ -268,6 +289,10 @@ struct PrepJob {
     bool  auto_rotate = true;
     bool  force_external_decode = false;
     std::string ffmpeg_exe = "ffmpeg";
+    // How the frames already on disk were cut from each video, from the
+    // workspace's record (DatasetPlan's recorded_captures). A run that keeps
+    // them reports these, not what its own settings would have made.
+    std::vector<PrepCapture> recorded_captures;
 
     // The photographs' colour space. Frames convert to sRGB before the
     // segmenter sees them, which is what it was trained on.
@@ -349,6 +374,23 @@ inline float input_fps(const PrepJob& job, const PrepInput& in) {
     return input_fps(job.inputs, job.video_fps, input_index(job, in));
 }
 
+// The LUT a row's frames go through, "" for none. Automatic is the file's own
+// detected LUT, else the nearest choice above; a detected one never carries
+// down -- a phone clip below a D-Log M one is not D-Log M.
+inline std::string input_lut(const std::vector<PrepInput>& inputs, size_t at) {
+    if (at >= inputs.size()) return {};
+    if (inputs[at].lut.empty() && !inputs[at].lut_detected.empty())
+        return inputs[at].lut_detected;
+    for (size_t k = at + 1; k-- > 0;)
+        if (!inputs[k].lut.empty())
+            return inputs[k].lut == kLutNone ? std::string() : inputs[k].lut;
+    return {};
+}
+
+inline std::string input_lut(const PrepJob& job, const PrepInput& in) {
+    return input_lut(job.inputs, input_index(job, in));
+}
+
 // No selection happens at all: no sharpness window, no motion plan.
 inline bool every_frame(const PrepJob& job, const PrepInput& in) {
     return in.is_video && !(input_fps(job, in) > 0.0f);
@@ -380,16 +422,8 @@ inline bool reads_photos_in_place(const std::vector<PrepInput>& inputs,
 std::string planned_image_dir(const std::vector<PrepInput>& inputs,
                               const std::string& workspace, PhotoImport mode);
 
-// A video the run extracted frames from, for the manifest's `captures`:
-// the stems carry the source frame index (fps 0, the file's own rate) or,
-// after the ffmpeg fallback, the kept-frame count at `fps`.
-struct PrepCapture {
-    std::string subdir;
-    std::string path;
-    double fps = 0;
-    // Every track kept the same instants, so the frames of one stem are a rig.
-    bool lockstep = false;
-};
+// What extracting `in` now would report, with the decoder this build would use.
+PrepCapture video_capture(const PrepJob& job, const PrepInput& in);
 
 struct PrepResult {
     std::vector<PrepCapture> captures;
@@ -435,7 +469,7 @@ const Backends& backends();
 
 // Video container extensions the GUI offers, in the file dialog and for
 // drag-and-drop. Sized here so a range-for over it works from another TU.
-inline constexpr int kNumVideoExtensions = 14;
+inline constexpr int kNumVideoExtensions = 15;
 extern const char* const kVideoExtensions[kNumVideoExtensions];
 
 // Does this path name one of them? (Extension only; the file need not exist.)
@@ -446,7 +480,7 @@ bool is_dual_fisheye_path(const std::string& path);
 // A GoPro MAX .360 by its name. The packing itself is what probe_pano360
 // confirms; this only decides whether it is worth asking.
 bool is_pano360_path(const std::string& path);
-// An Insta360 .insp photo or .lrv proxy: one or two fisheye circles packed
+// An Insta360 .insp photo or .lrv / .prx proxy: one or two fisheye circles packed
 // into each frame, which PrepInput::packed_lenses counts.
 bool is_packed_lens_path(const std::string& path);
 
@@ -577,8 +611,19 @@ struct WorkspaceState {
     // dataset that arrived finished. A run pointed at one ADDS to it.
     bool model = false;
     bool geometry = false;  // normals/ or depths/, which a run adds to
+    bool dense = false;
     // The folder says what built it (DatasetRecord.h).
     bool record = false;
+    // features/ and matches.bin under the signatures `spirula sfm` checks
+    // before reusing them, and the journal of a matching it did not finish.
+    bool extracted = false, matched = false, matching_part = false;
+    // The image folder the extraction signed, absolute: a moved dataset's
+    // features are extracted again.
+    std::string extracted_images;
+    // sparse/0 aligned to laser scans by `spirula lidar`, and with what.
+    bool aligned = false;
+    std::vector<std::string> aligned_clouds;
+    bool aligned_kept_frame = false;
     // Something a resumed run can pick up instead of redoing.
     bool resumable() const { return frames || features || masks; }
 };
@@ -673,6 +718,10 @@ private:
     bool extract_video_builtin(const PrepJob& job, const PrepInput& in,
                                const std::string& images,
                                PrepResult& out, std::string& error);
+    // The row's LUT appended to an ffmpeg filter chain, once the file has been
+    // read as one; false with `error` set when it cannot be.
+    bool append_lut_filter(const PrepJob& job, const PrepInput& in,
+                           std::string& chain, std::string& error);
     bool extract_video_ffmpeg(const PrepJob& job, const PrepInput& in,
                               const std::string& images, PrepResult& out,
                               std::string& error);

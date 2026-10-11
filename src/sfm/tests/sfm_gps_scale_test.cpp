@@ -101,7 +101,7 @@ static Scene makeScene() {
             tv.config = (int)TwoViewConfig::Uncalibrated;
             for (const auto& kv : feat_of[i]) {
                 auto it = feat_of[j].find(kv.first);
-                if (it != feat_of[j].end()) tv.matches.push_back({kv.second, it->second, 0});
+                if (it != feat_of[j].end()) tv.matches.push_back({kv.second, it->second});
             }
             if (tv.matches.size() >= 15) s.db.pairs.push_back(std::move(tv));
         }
@@ -137,6 +137,7 @@ static Out run(const Scene& sc, MapperOptions opt, double k, int from_walk, doub
     SensorPriorOptions so;
     so.verbose = opt.verbose;
     so.gps_flat = true;
+    so.gps_max_error = 5.0;   // metre-level GPS, as on the canopy capture: the position check misses it
     ExifGpsPriors gps(fixes, so);
     opt.gps_scale_band = band;
     Mapper m(sc.db, sc.feats, opt, {}, nullptr, nullptr, &gps);
@@ -208,6 +209,7 @@ static void testAssemblyScaleRequest(const Scene& sc, const Reconstruction& full
     }
     SensorPriorOptions so;
     so.gps_flat = true;
+    so.gps_max_error = 5.0;
     ExifGpsPriors gps(fixes, so);
     MapperOptions o = opt;
     o.ba_growth_ratio = 1.5;

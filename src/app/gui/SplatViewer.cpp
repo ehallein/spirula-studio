@@ -8,6 +8,7 @@
 #include "config/TrainConfig.h"
 #include "data/DatasetParser.h"
 #include "data/SparseEdit.h"
+#include "dense/Generation.h"
 #include "engine/Engine.h"
 #include "i18n/catalog/Gui.h"
 #include "app/TrainerCore.h"
@@ -229,10 +230,8 @@ void SplatViewer::run(std::string path) {
         _unit = unit;
     };
     try {
-        // A mesh is not a checkpoint, so it is resolved before
-        // find_splat_ply (which looks for step-*.ckpt directories) gets a
-        // chance to misread the path. A .ply only counts as a mesh when its
-        // header declares faces -- otherwise it is a splat or point cloud.
+        path = spirula::dense::verified_dense_file(path);
+        // PLY faces distinguish meshes from point clouds before checkpoint lookup.
         if (meshing::is_mesh_path(path) &&
             (fs::path(path).extension() != ".ply" ||
              meshing::ply_is_mesh(path))) {
@@ -294,6 +293,10 @@ void SplatViewer::run(std::string path) {
             // Poses and points, not pixels: a reconstruction is worth opening
             // even when its images are somewhere else.
             dcfg.require_image_files = false;
+            // A picked Metashape file is the one meant, among its siblings.
+            const std::string ext = fs::path(path).extension().string();
+            if (ext == ".psx" || ext == ".PSX") dcfg.metashape_psx = path;
+            if (ext == ".xml" || ext == ".XML") dcfg.metashape_xml = path;
             ParsedDataset ds = parse_dataset(dataset, dcfg, "");
             PostSplitCameras post = bake_post_split(ds, false, false);
             const int64_t n = ds.points.num();
@@ -366,10 +369,7 @@ void SplatViewer::run(std::string path) {
         spirula::SplatCloud c = spirula::read_splat_ply(ply);
         if (c.num <= 0) return fail(msg::viewer_no_splats.get());
 
-        // The run this file came out of, when it is still next to it: what
-        // primitive its splats are, and how they are rasterized. A PLY says
-        // nothing about either, and rendering a Mip or 3DGUT model as vanilla
-        // 3DGS is wrong in a way that looks like a bad reconstruction.
+        // PLY omits the primitive and rasterization settings stored in config.json.
         TrainConfig cfg;
         const fs::path cfg_path = fs::path(run_dir) / "config.json";
         std::error_code ec;

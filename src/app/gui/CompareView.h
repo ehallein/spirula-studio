@@ -67,6 +67,8 @@ public:
         std::function<std::vector<std::string>(const std::string&)> f) {
         _siblings_of = std::move(f);
     }
+    // Told the file an edit was just saved to.
+    void set_on_model_saved(std::function<void(const std::string&)> f) { _on_model_saved = std::move(f); }
 
     // ---- editing (docs/notes/gui-editing-plan.md) ----
     // Open the pane's model for editing, or give it back. One pane at a time:
@@ -113,6 +115,14 @@ public:
     void poll();
     // The row above the panes: what is open, the add button, the link.
     void draw_toolbar();
+    // Panes showing splats through the engine, for screenshots
+    // (defined in Screenshot.cpp).
+    struct PaneShot {
+        ViewportPanel* panel;
+        std::string asked, file;
+        int64_t splats;
+    };
+    std::vector<PaneShot> splat_panes();
     // The panes themselves, `height` tall (0 = all that is left).
     void draw(float height);
     void destroy_gl();
@@ -238,6 +248,7 @@ private:
     std::vector<std::string> _log;
     std::function<void()> _pick_file;
     std::function<std::vector<std::string>(const std::string&)> _siblings_of;
+    std::function<void(const std::string&)> _on_model_saved;
 };
 
 }  // namespace gui

@@ -180,6 +180,10 @@ std::string metricReason(const MetricFit& f) {
     switch (f.reason) {
         case MetricFail::Pairs:
             return spirula::i18n::format(M::metric_fail_pairs, {(long long)f.n});
+        case MetricFail::Distinct:
+            return spirula::i18n::format(
+                M::metric_fail_distinct,
+                {(long long)f.distinct, (long long)f.n, (long long)metricMinDistinct(f.flat)});
         case MetricFail::Spread:
             return spirula::i18n::format(M::metric_fail_spread, {L::num(f.spread, 3)});
         case MetricFail::Inliers:
@@ -396,7 +400,7 @@ static SensorPriorOptions sensorPriorOptions(const SfmConfig& cfg) {
     SensorPriorOptions po;
     po.max_dt = cfg.sensor_max_dt;
     po.gps_centres = cfg.metricGps();
-    po.gps_max_error = cfg.metricGps() && cfg.metric_max_error > 0 ? cfg.metric_max_error : 5.0;
+    po.gps_max_error = cfg.metricGps() ? cfg.metric_max_error : 0.0;
     po.gps_max_error_frac = cfg.metric_max_error_frac;
     po.trusted_position = cfg.metric_gps == "full";
     po.gps_flat = cfg.metric_gps == "horizontal";
@@ -601,15 +605,23 @@ void calibrateSensorPriorsFromDatabase(TelemetryPriors& priors, const MatchesDat
         if (p.config != (int)TwoViewConfig::Uncalibrated) continue;
         if (!priors.calibrationPair(p.image1, p.image2)) continue;
         pairs.emplace_back(p.image1, p.image2);
-        matches.push_back(p.matches);
+        matches.push_back(p.matches.toVector());
     }
     calibrateSensorPriorsFrom(priors, feats, pairs, matches, cams, tvopt, threads, verbose, true);
 }
 
 
+static std::vector<PosedImage> posedImagesOf(const Reconstruction& rec) {
+    std::vector<PosedImage> out;
+    for (const auto& kv : rec.images)
+        if (kv.second.registered) out.push_back({kv.first, kv.second.camera_id, kv.second.pose});
+    return out;
+}
+
 bool fixGauge(std::vector<Reconstruction>& models, const SfmConfig& cfg,
               const std::string& imagedir, bool verbose,
-              std::vector<ModelGauge>& gauge, const SensorCaptures* sensors) {
+              std::vector<ModelGauge>& gauge, const SensorCaptures* sensors,
+              PriorSource* mapped) {
     const bool gps = cfg.metricGps();
     const bool flat = cfg.metric_gps == "horizontal";
     const bool file = !cfg.metric_positions.empty();
@@ -639,17 +651,19 @@ bool fixGauge(std::vector<Reconstruction>& models, const SfmConfig& cfg,
         sensors = &own;
     }
     const std::vector<std::unique_ptr<LoadedCapture>>& loaded = sensors->loaded;
+    std::vector<MetricFit> log_fit(models.size());   // the GPS log's, where it was fitted
     if (!loaded.empty()) {
         std::vector<SensorCapture> caps = sensors->caps();
         SensorGaugeOptions opt;
         opt.mode = cfg.sensor_gauge == "up" ? SensorMode::Up : SensorMode::Auto;
         opt.gps_full = cfg.metric_gps == "full";
-        opt.gps_max_error = gps ? cfg.metric_max_error : 5.0;
+        opt.gps_max_error = gps ? cfg.metric_max_error : 0.0;
         opt.gps_max_error_frac = cfg.metric_max_error_frac;
         opt.verbose = verbose;
         for (size_t i = 0; i < models.size(); i++) {
             const SensorGaugeResult r = fitSensorGauge(models[i], caps, opt);
             reportSensorGauge(i, r, loaded, verbose);
+            if (r.gps_frames > 0) log_fit[i] = r.gps;
             if (!r.applied) continue;
             applySim3(models[i], r.T);
             gauge[i].oriented = true;
@@ -701,16 +715,36 @@ bool fixGauge(std::vector<Reconstruction>& models, const SfmConfig& cfg,
     }
 
     // ---- an outside metric reference --------------------------------------
-    bool all = true;
+    bool readable = true;
     std::map<std::string, Vec3> positions;
     if (file) {
         std::string err;
         if (!readMetricPositions(cfg.metric_positions, positions, err)) {
             L::fail(Tag::Orient, M::metric_positions_bad, {cfg.metric_positions, err});
-            all = false;
+            readable = false;
         }
     }
-    for (size_t i = 0; i < models.size() && all && (gps || file); i++) {
+    // The GPS frame the mapper's bundle adjustments held the model in, refitted on its
+    // final poses: a refused fit below keeps it rather than the normalized frame. The
+    // cameras' guessed up never replaces one a sensor measured.
+    auto keepMapped = [&](size_t i) {
+        if (!mapped || !gps) return false;
+        const GpsFrame f = mapped->factors(posedImagesOf(models[i])).gps;
+        const bool guessed = f.up == GpsUp::Cameras;
+        if (!f.ok || (guessed && gauge[i].oriented)) return false;
+        const double s = std::sqrt(f.A[0] * f.A[0] + f.A[3] * f.A[3] + f.A[6] * f.A[6]);
+        applySim3(models[i], Sim3{s, mat3Scale(f.A, 1.0 / s), f.t});
+        gauge[i].metric = true;
+        gauge[i].scale = "gps";
+        gauge[i].oriented = !guessed;
+        gauge[i].up = f.up == GpsUp::Imu        ? "sensors"
+                      : f.up == GpsUp::Declared ? "level"
+                      : f.up == GpsUp::Fitted   ? "gps"
+                                                : "cameras";
+        L::out(Tag::Orient, M::metric_mapped, {(long long)i, L::num(s, 6), L::num(f.gate, 3)});
+        return true;
+    };
+    for (size_t i = 0; i < models.size() && readable && (gps || file); i++) {
         // A metric sensor frame settles the model; a second reference over it
         // could only disagree with the one already applied.
         if (gauge[i].metric) continue;
@@ -735,12 +769,12 @@ bool fixGauge(std::vector<Reconstruction>& models, const SfmConfig& cfg,
             fitMetricGauge(ref, cfg.metric_max_error,
                            flat ? MetricAxes::Horizontal : MetricAxes::Full,
                            cfg.metric_max_error_frac);
-        // A refused fit leaves the model in the frame it came in with -- the
-        // sensors', or the normalized one the fallback below writes. Applying
-        // the identity it returns would still claim the metre.
+        // Applying the identity a refused fit returns would still claim the metre.
         if (!fit.ok) {
-            all = false;
-            L::warn(Tag::Orient, M::metric_failed, {(long long)i, metricReason(fit)});
+            if (keepMapped(i)) continue;
+            // A video's frames carry no EXIF fix; their GPS is the log the sensors fitted.
+            const MetricFit& why = !file && fit.n == 0 && log_fit[i].n > 0 ? log_fit[i] : fit;
+            L::warn(Tag::Orient, M::metric_failed, {(long long)i, metricReason(why)});
             continue;
         }
         applySim3(models[i], composeSim3(fit.T, pre));
@@ -1144,6 +1178,7 @@ std::unique_ptr<ExifGpsPriors> makeExifGpsPriors(const SfmConfig& cfg, const std
     if (imagedir.empty() || !(cfg.sensor_map || cfg.sensor_pairs)) return nullptr;
     const std::map<std::string, std::string> stem2name = imageStemMap(imagedir);
     std::vector<std::optional<Geodetic>> fixes(db.images.size());
+    std::vector<char> level_only(db.images.size(), 0);
     int with = 0, no_alt = 0;
     for (size_t i = 0; i < db.images.size(); i++) {
         auto it = stem2name.find(db.images[i].name);
@@ -1154,6 +1189,7 @@ std::unique_ptr<ExifGpsPriors> makeExifGpsPriors(const SfmConfig& cfg, const std
         fixes[i] = Geodetic{e.lat_deg, e.lon_deg, e.alt_m};
         with++;
         if (!e.has_alt) no_alt++;
+        level_only[i] = !e.has_alt;
     }
     if (!with) return nullptr;
     if (verbose)
@@ -1165,7 +1201,8 @@ std::unique_ptr<ExifGpsPriors> makeExifGpsPriors(const SfmConfig& cfg, const std
             auto it = cams.cameras.find(cams.ids[i]);
             level[i] = it != cams.cameras.end() && it->second.isSpherical();
         }
-    return std::make_unique<ExifGpsPriors>(fixes, sensorPriorOptions(cfg), std::move(level));
+    return std::make_unique<ExifGpsPriors>(fixes, sensorPriorOptions(cfg), std::move(level),
+                                           std::move(level_only));
 }
 
 // The unregistered list as a data file, when SS_UNREG_LOG names one: per
@@ -1450,24 +1487,28 @@ void sweepStaleFeatures(const fs::path& outdir, const std::set<fs::path>& live) 
     for (const fs::path& p : dead) fs::remove(p, ec);
 }
 
-// Is `feat` a whole feature file that describes `img` as it stands now? An
-// mtime comparison, because a re-run that regenerated the frames or the masks
-// leaves everything else about the settings identical.
+// Is `feat` a whole feature file that describes `img` as it stands now? By
+// mtime: regenerated frames or masks leave the settings identical. Given
+// `older`, a whole file with a newer image or mask passes and sets it.
 bool featuresAreCurrent(const fs::path& feat, const fs::path& img,
                         const std::string& mask, const std::string& feature_mask,
-                        uint32_t& count) {
+                        uint32_t& count, bool* older = nullptr) {
     std::error_code fe, ie, me;
     const auto t = fs::last_write_time(feat, fe);
-    if (fe || t < fs::last_write_time(img, ie) || ie) return false;
+    if (fe) return false;
+    bool stale = t < fs::last_write_time(img, ie) || ie;
     for (const std::string* m : {&mask, &feature_mask})
-        if (!m->empty() && t < fs::last_write_time(*m, me) && !me) return false;
+        stale = stale || (!m->empty() && t < fs::last_write_time(*m, me) && !me);
+    if (stale && !older) return false;
+    if (older) *older = stale;
     return peekFeatures(feat.string(), count);
 }
 
 }  // namespace
 
 int extractDirectory(const std::string& imagedir, const fs::path& outdir,
-                     const SfmConfig& cfg, ExtractStats& stats, bool reuse) {
+                     const SfmConfig& cfg, ExtractStats& stats, bool reuse,
+                     std::vector<fs::path>* trusted) {
     const SiftOptions& opt = cfg.sift;
     const std::string& maskdir = cfg.mask_dir;
     const std::string& fmaskdir = cfg.feature_mask_dir;
@@ -1616,10 +1657,13 @@ int extractDirectory(const std::string& imagedir, const fs::path& outdir,
             const std::string fmask = k < lopt.feature_mask_paths.size()
                                           ? lopt.feature_mask_paths[k]
                                           : std::string();
-            if (!featuresAreCurrent(outs[k], paths[k], mask, fmask, count)) {
+            bool older = false;
+            if (!featuresAreCurrent(outs[k], paths[k], mask, fmask, count,
+                                    trusted ? &older : nullptr)) {
                 todo.push_back(k);
                 continue;
             }
+            if (older) trusted->push_back(outs[k]);
             stats.reused++;
             stats.features += count;
             stats.images++;
@@ -1810,7 +1854,8 @@ int loadFeatureDir(const std::string& featdir, const SfmConfig& cfg, bool with_d
             pool.emplace_back([&] {
                 for (size_t i = next++; i < files.size(); i = next++) {
                     try {
-                        feats[i] = readFeatures(files[i].string(), with_descriptors);
+                        feats[i] = readFeatures(files[i].string(), with_descriptors,
+                                                /*map=*/true);
                     } catch (const std::exception& e) {
                         std::lock_guard<std::mutex> lk(err_mtx);
                         if (first_error.empty()) first_error = e.what();
@@ -1991,7 +2036,7 @@ int matchFeatureDir(const std::string& featdir, const SfmConfig& cfg, PairMode m
     // workers finish out of order, so the journal is not in the list's order.
     std::unordered_map<uint64_t, TwoViewMatches> done_kept;
     std::vector<uint64_t> done_keys;
-    const fs::path journal_path = res ? res->dir / "matches.part" : fs::path();
+    const fs::path journal_path = res ? res->dir / resume::kMatchJournal : fs::path();
     const bool resumed_verify =
         res && verify &&
         resume::readJournal(journal_path, res->signature, db.images, done_kept, done_keys,
@@ -2347,23 +2392,32 @@ AutoResult run_auto(SfmConfig& cfg, const AutoInputs& in) {
     // run interrupted half way through leaves files the next one may reuse.
     const fs::path rdir = resume::dir(_workspace);
     const std::string extract_sig =
-        stageSignature(cfg, CMD_EXTRACT) + "images=" + _imagedir + "\n";
+        stageSignature(cfg, CMD_EXTRACT) + resume::kSignedImages + _imagedir + "\n";
+    // What the files on disk were recorded as made with, before this run
+    // records itself: matches over kept features were made under it.
+    const std::string old_extract = resume::recorded(rdir / resume::kExtractSig);
     std::error_code rm_ec;
-    bool reuse = cfg.reuse;
-    if (!reuse || resume::recorded(rdir / "extract.sig") != extract_sig) {
+    bool reuse = cfg.reuse && cfg.reuse_features != "redo";
+    const bool keep_features = reuse && cfg.reuse_features == "keep";
+    if (!reuse || (!keep_features && old_extract != extract_sig)) {
         // The pair list and the journal index the feature files, so they go
         // wherever those go.
         reuse = false;
         resume::clear(_workspace);
         fs::remove_all(featdir, rm_ec);
         fs::remove(matchpath, rm_ec);
+    } else if (old_extract != extract_sig && fs::is_directory(featdir, rm_ec) &&
+               !fs::is_empty(featdir, rm_ec)) {
+        L::out(Tag::Extract, M::extract_kept_other_settings, {featdir.string()});
     }
-    if (cfg.reuse) resume::store(rdir / "extract.sig", extract_sig);
+    if (cfg.reuse) resume::store(rdir / resume::kExtractSig, extract_sig);
 
     // ---- 1. extract ----
     double t0 = now();
     ExtractStats est;
-    if (int rc = extractDirectory(_imagedir, featdir, cfg, est, reuse)) {
+    std::vector<fs::path> trusted;
+    if (int rc = extractDirectory(_imagedir, featdir, cfg, est, reuse,
+                                  keep_features ? &trusted : nullptr)) {
         r.exit_code = rc;
         return r;
     }
@@ -2412,19 +2466,54 @@ AutoResult run_auto(SfmConfig& cfg, const AutoInputs& in) {
     // What this stage's output depends on: its own settings, the extraction
     // that produced its input, and the feature files themselves -- the pair
     // lists and the journal are indices into a particular set of those.
+    const std::string match_settings = stageSignature(cfg, CMD_MATCH) + "pairs-resolved=" +
+                                       std::to_string((int)mode) + "\n";
+    const std::string features_before = "features=" + featureDirDigest(featdir) + "\n";
+    // Kept features older than their image or mask are dated now, so the next
+    // run counts them current as well.
+    for (const fs::path& p : trusted)
+        fs::last_write_time(p, fs::file_time_type::clock::now(), rm_ec);
     MatchResume mres;
     mres.dir = rdir;
-    mres.signature = extract_sig + stageSignature(cfg, CMD_MATCH) +
-                     "pairs-resolved=" + std::to_string((int)mode) + "\n" +
-                     "features=" + featureDirDigest(featdir) + "\n";
+    mres.signature =
+        extract_sig + match_settings + "features=" + featureDirDigest(featdir) + "\n";
+    const std::string old_match = resume::recorded(rdir / resume::kMatchSig);
+    // Matches over features kept under other extraction settings are still
+    // theirs: the digest is of the files they index, as they were then.
+    const bool current =
+        old_match == mres.signature || old_match == old_extract + match_settings + features_before;
+    if (cfg.reuse_matches == "redo") {
+        resume::forget(rdir / resume::kMatchSig);
+        resume::forget(rdir / resume::kMatchJournal);
+        resume::forget(rdir / "pairs.bin");
+    }
+    // Kept whatever made them only over the very files they index: a feature
+    // file this run wrote numbers its keypoints anew.
+    const bool keep_matches = cfg.reuse_matches == "keep" && !current &&
+                              fs::exists(matchpath, rm_ec);
+    if (keep_matches && est.reused != est.images) {
+        L::warn(Tag::Match, M::match_keep_refused, {matchpath.string()});
+    }
     // A finished matches.bin is the whole of this stage; the mapper wants
     // keypoints and colours, so the descriptors are never read at all.
     bool reused_matches = false;
-    if (cfg.reuse && fs::exists(matchpath, rm_ec) &&
-        resume::recorded(rdir / "match.sig") == mres.signature) {
+    if (cfg.reuse && cfg.reuse_matches != "redo" && fs::exists(matchpath, rm_ec) &&
+        (current || (keep_matches && est.reused == est.images))) {
         try {
             MatchesDatabase disk = readMatches(matchpath.string());
-            if (loadFeatureDir(featdir.string(), cfg, /*with_descriptors=*/false, feats, db) == 0) {
+            bool loaded =
+                loadFeatureDir(featdir.string(), cfg, /*with_descriptors=*/false, feats, db) == 0;
+            bool same_images = loaded && disk.images.size() == db.images.size();
+            for (size_t i = 0; same_images && i < db.images.size(); i++)
+                same_images = disk.images[i].name == db.images[i].name &&
+                              disk.images[i].num_features == db.images[i].num_features;
+            if (loaded && !current && !same_images) {
+                L::warn(Tag::Match, M::match_keep_refused, {matchpath.string()});
+                feats.clear();
+                db = MatchesDatabase();
+                loaded = false;
+            }
+            if (loaded) {
                 db.pairs = std::move(disk.pairs);
                 db.cameras = std::move(disk.cameras);
                 db.camera_ids = std::move(disk.camera_ids);
@@ -2450,8 +2539,11 @@ AutoResult run_auto(SfmConfig& cfg, const AutoInputs& in) {
         }
     }
     if (reused_matches) {
+        if (!current) L::out(Tag::Match, M::match_kept_other_settings, {matchpath.string()});
         L::out(Tag::Match, M::match_reusing_matches,
                {(long long)mstats.kept, matchpath.string()});
+        if (cfg.reuse && old_match != mres.signature)
+            resume::store(rdir / resume::kMatchSig, mres.signature);
     } else if (int rc = matchFeatureDir(featdir.string(), cfg, mode, /*verify=*/true, feats, db,
                                         mstats, &calib, cfg.reuse ? &mres : nullptr)) {
         r.exit_code = rc;
@@ -2462,18 +2554,16 @@ AutoResult run_auto(SfmConfig& cfg, const AutoInputs& in) {
         writeMatches(matchpath.string(), db);
         // matches.bin says everything the journal and the pair list did, and
         // the journal is the same size again.
-        resume::forget(rdir / "matches.part");
+        resume::forget(rdir / resume::kMatchJournal);
         resume::forget(rdir / "pairs.bin");
-        if (cfg.reuse) resume::store(rdir / "match.sig", mres.signature);
+        if (cfg.reuse) resume::store(rdir / resume::kMatchSig, mres.signature);
     }
     // Nothing past this point reads a descriptor -- the mapper works on
     // keypoints, the correspondence graph and the per-keypoint colors -- and on
     // a large capture they are the biggest thing in the process: 8k features
     // per image at 128 bytes is a gigabyte per thousand images, held for the
     // whole of mapping for nothing.
-    for (FeatureSet& fs : feats) {
-        std::vector<uint8_t>().swap(fs.descriptors);
-    }
+    for (FeatureSet& fs : feats) fs.dropDescriptors();
     // After writeMatches, never before: the file on disk indexes the feature
     // files, which keep every row.
     if (cfg.compact_unused_features) {
@@ -2484,6 +2574,11 @@ AutoResult run_auto(SfmConfig& cfg, const AutoInputs& in) {
         remapMatches(db, plan, feats);
         if (verbose) reportFeatureCompaction(plan.stats);
     }
+    // The pair lists are read a few times a run (seeds, seams, splits) and the
+    // graph built from them constantly, so past 256 MB they go to a file, mapped.
+    if (mstats.inliers * sizeof(FeatureMatch) > (256ull << 20))
+        spillMatches(db, (ws / ".spirula-matches.spill").string());
+    cfg.mapper.spill_dir = ws.string();
 
     // ---- 3. incremental mapping ----
     // The grouping and the focals the two-view stage settled on carry straight
@@ -2512,8 +2607,8 @@ AutoResult run_auto(SfmConfig& cfg, const AutoInputs& in) {
         r.exit_code = 2;
         return r;
     }
-    Mapper mapper(db, feats, mapopt, cs.ids, &rigs, &seqs,
-                  cfg.sensor_map ? calib.positionPriors() : nullptr);
+    PriorSource* mapped = cfg.sensor_map ? calib.positionPriors() : nullptr;
+    Mapper mapper(db, feats, mapopt, cs.ids, &rigs, &seqs, mapped);
     AssembleStats ast;
     std::vector<Reconstruction> models = runMapper(mapper, db, feats, cfg, ast);
     double t_map = now() - t0;
@@ -2531,7 +2626,7 @@ AutoResult run_auto(SfmConfig& cfg, const AutoInputs& in) {
 
     resolveImageNames(models, _imagedir);
     std::vector<ModelGauge> gauge;
-    const bool auto_metric = fixGauge(models, cfg, _imagedir, verbose, gauge, &sensors);
+    const bool auto_metric = fixGauge(models, cfg, _imagedir, verbose, gauge, &sensors, mapped);
     recolorPoints(models, cfg);
     // The gauge is what a screen was missing: every snapshot before this one is
     // in the seed pair's frame, so a run watched to the end left a tilted model

@@ -175,10 +175,11 @@ struct VerifyCalibration {
 // ---------------------------------------------------------------------------
 
 // Features for every image under `imagedir`, written to `outdir` mirroring the
-// image tree. `reuse` keeps what an earlier run left there when it is whole and
-// newer than what it describes; a file no image maps to is removed either way.
+// image tree. `reuse` keeps a whole file newer than its image and mask, and with
+// `trusted` an older one too, listed there; a file no image maps to is removed.
 int extractDirectory(const std::string& imagedir, const std::filesystem::path& outdir,
-                     const SfmConfig& cfg, ExtractStats& stats, bool reuse = false);
+                     const SfmConfig& cfg, ExtractStats& stats, bool reuse = false,
+                     std::vector<std::filesystem::path>* trusted = nullptr);
 
 // Where an interrupted run's matching left its work, and what those files must
 // carry to be this run's (sfm/core/Resume.h). Null is a run that starts over.
@@ -228,9 +229,11 @@ struct ModelGauge {
 };
 
 // Levelling, centring and the metric gauge. False when no metric frame fitted.
+// `mapped` is the source the mapper's bundle adjustments took GPS factors from.
 bool fixGauge(std::vector<Reconstruction>& models, const SfmConfig& cfg,
               const std::string& imagedir, bool verbose,
-              std::vector<ModelGauge>& gauge, const SensorCaptures* sensors = nullptr);
+              std::vector<ModelGauge>& gauge, const SensorCaptures* sensors = nullptr,
+              PriorSource* mapped = nullptr);
 
 void resolveImageNames(std::vector<Reconstruction>& models, const std::string& imagedir);
 void recolorPoints(std::vector<Reconstruction>& models, const SfmConfig& cfg);

@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -386,6 +387,9 @@ struct MapperOptions {
     // gyro predict is re-solved with the rotation fixed, or refused.
     bool use_priors = true;
     double prior_rot_tol_deg = 2.0;
+    // A directory the correspondence graph may be spilled to once built
+    // (CorrespondenceGraph::spill) when it passes 256 MB; "" keeps it in memory.
+    std::string spill_dir;
 };
 
 class Mapper {
@@ -1087,9 +1091,10 @@ public:
             sum = sum + (iy->second.xyz - ix->second.xyz);
             depth.push_back((ix->second.xyz - ca).norm());
         }
-        if (depth.size() < 5) return -1;
-        const double med = medianOf(depth);
-        return med > 0 ? (sum * (1.0 / (double)depth.size())).norm() / med : -1;
+        const size_t n = depth.size();
+        if (n < 5) return -1;
+        const double med = medianOf(std::move(depth));
+        return med > 0 ? (sum * (1.0 / (double)n)).norm() / med : -1;
     }
 
     // Fuse the points an open seam holds twice, then refine: the fused points are spared the
@@ -2286,7 +2291,7 @@ public:
 
     // A PnP pose against the GPS, through the last solve's fit: four radii off
     // right after an in-radius registration is a wrong-place PnP and refused;
-    // three in a row beyond the radius is drift, and asks for a global BA now.
+    // three in a row beyond the radius is drift, and asks for a global BA soon.
     bool gpsCheck(uint32_t img, const Pose& pose, bool* measured = nullptr) {
         double d;
         if (!priors_ || !gps_frame_.ok || !priors_->positionError(img, pose, gps_frame_, d))
@@ -2294,9 +2299,12 @@ public:
         prior_stats_.gps_checked++;
         gps_checked_imgs_.insert(img);
         if (measured) *measured = true;
-        const double gate = gps_frame_.gate;
+        const double gate =
+            gps_frame_.gateAt(mul(gps_frame_.A, cameraCenter(pose)) + gps_frame_.t);
         prior_stats_.gps_gate = gate;
-        if (d > kGpsRefuseGates * gate && gps_out_run_ == 0) {
+        // Refused once: a second PnP there is taken, so a fix that is itself the outlier
+        // (a phone's bracket 45 m off, a hover's first fit) cannot spend every trial.
+        if (d > kGpsRefuseGates * gate && gps_last_in_ && gps_deferred_imgs_.insert(img).second) {
             reg_fail_.gps_far++;
             prior_stats_.gps_refused++;
             gps_refused_imgs_[img]++;
@@ -2307,20 +2315,32 @@ public:
             return false;
         }
         gps_refused_imgs_.erase(img);
+        gps_last_in_ = d <= gate;
         if (d <= gate) {
             gps_out_run_ = 0;
+            gps_in_since_ba_ = true;
+            gps_ba_backoff_ = 1;
             return true;
         }
         prior_stats_.gps_out++;
-        if (++gps_out_run_ >= 3 && gps_regs_since_ba_ >= 10 && !ba_requested_) {
+        if (++gps_out_run_ >= 3 && gpsBaDue() && !ba_requested_) {
             ba_requested_ = true;
+            if (!gps_in_since_ba_) gps_ba_backoff_ = std::min(2 * gps_ba_backoff_, 1u << 10);
             if (opt_.verbose)
                 slog::diag(slog::Tag::Map,
-                           "[prior] GPS: %s is %.1f m off the fit, %u in a row beyond %.1f m; "
+                           "[prior] GPS: %s is %.2f m off the fit, %u in a row beyond %.2f m; "
                            "bundle adjusting now",
                            db_.images[img].name.c_str(), d, gps_out_run_, gate);
         }
         return true;
+    }
+
+    // A BA the GPS asks for waits ten registrations, or 5% growth (half COLMAP's 10% schedule)
+    // once that is more, doubled for each asked BA that brought no check back inside: GPS no
+    // BA pulls in (a lagging or drifting fix) otherwise asks every ten, n^2/10 BA work in all.
+    bool gpsBaDue() const {
+        const double wait = std::max(10.0, 0.05 * rec_.numRegistered());
+        return gps_regs_since_ba_ >= gps_ba_backoff_ * wait;
     }
 
     // A wrong-place PnP is refused once and placed later; images that stay refused
@@ -2829,8 +2849,8 @@ private:
             if (priors_ && opt_.verbose)
                 slog::diag(slog::Tag::Map,
                            "[prior] GPS check: %u registrations checked, %u registrations "
-                           "refused beyond %.0f m, %u bundle adjustments triggered by %u "
-                           "registrations beyond %.0f m, %u model(s) dropped the frame",
+                           "refused beyond %.2f m, %u bundle adjustments triggered by %u "
+                           "registrations beyond %.2f m, %u model(s) dropped the frame",
                            prior_stats_.gps_checked, prior_stats_.gps_refused,
                            kGpsRefuseGates * prior_stats_.gps_gate,
                            prior_stats_.gps_ba, prior_stats_.gps_out, prior_stats_.gps_gate,
@@ -2873,9 +2893,7 @@ private:
     // (~200 kB each at 8192 features), so an unpruned 2000-image model costs
     // ~400 MB whether it registered 2000 images or 20.
     Reconstruction snapshotModel() const {
-        Reconstruction m = rec_;
-        for (auto it = m.images.begin(); it != m.images.end();)
-            it = it->second.registered ? std::next(it) : m.images.erase(it);
+        Reconstruction m = rec_.registeredCopy();
         // Cameras that ended with no registered image (an unused resolution
         // bucket, or a group whose images were all rejected) would be written
         // to cameras.bin with their default-guess intrinsics -- drop them.
@@ -3010,6 +3028,8 @@ private:
         recent_regs_.clear();
         gps_regs_since_ba_ = 0;
         gps_out_run_ = 0;
+        gps_last_in_ = gps_in_since_ba_ = true;
+        gps_ba_backoff_ = 1;
         ba_requested_ = false;
         bssStart();
         rebuildScores();
@@ -3080,6 +3100,8 @@ private:
                     ba_requested_ = false;
                     gps_out_run_ = 0;
                     gps_regs_since_ba_ = 0;
+                    gps_last_in_ = false;   // drift a BA was asked for need not be gone after it
+                    gps_in_since_ba_ = false;
                 }
                 if (stop_at_ba) break;
                 checkedRefine(false);
@@ -3097,25 +3119,14 @@ private:
         return registered_here;
     }
 
-    // Transactional global refinement (D36): one toxic registration reaching a
-    // trivial-loss global BA can bend a small model so far that the filters
-    // shred it, seed included. Snapshot first; if refinement collapses the
-    // model, restore the snapshot and de-register the images added since the
-    // last refinement -- the suspects -- instead of keeping the wreckage. This
-    // is the mapper "going back": the registrations are undone, the images
-    // keep their remaining trials, and growth continues from known-good state.
-    // Undo state for a transactional refine. Copying the whole Reconstruction
-    // is O(database), not O(model): `rec_` carries an entry for every image the
-    // database has (resetModel builds them all), each with a point3D_ids vector
-    // as long as that image's feature list, and refinement can only touch the
-    // registered ones. Unregistered images are all-invalid by invariant --
-    // deregisterImage clears them -- so they restore without being copied. On a
-    // 40-image cluster of a 5400-image capture that is 135x less per refine.
+    // Undo state for a transactional refine (D36): registered images only, and
+    // without keypoints -- unregistered ones are all-invalid by invariant, and
+    // only resetModel writes points2D. 135x less for 40 images of a 5400-image run.
     struct Snapshot {
         std::map<uint32_t, Camera> cameras;
         std::map<uint64_t, Point3D> points3D;
         uint64_t next_point3D_id = 1;
-        std::vector<std::pair<uint32_t, Image>> images;  // registered only
+        std::vector<std::pair<uint32_t, Image>> images;  // registered, no points2D
         std::set<uint32_t> focal_known;
         std::vector<RigCalib> rigs;
         std::set<uint32_t> rig_detached;
@@ -3130,7 +3141,7 @@ private:
         s.rigs = rec_.rigs;
         s.rig_detached = rec_.rig_detached;
         for (const auto& kv : rec_.images)
-            if (kv.second.registered) s.images.emplace_back(kv.first, kv.second);
+            if (kv.second.registered) s.images.emplace_back(kv.first, kv.second.withoutPoints2D());
         return s;
     }
 
@@ -3152,9 +3163,16 @@ private:
             std::fill(kv.second.point3D_ids.begin(), kv.second.point3D_ids.end(),
                       kInvalidPoint3D);
         }
-        for (auto& kv : s.images) rec_.images[kv.first] = std::move(kv.second);
+        for (auto& kv : s.images) {
+            Image& im = rec_.images[kv.first];
+            kv.second.points2D = std::move(im.points2D);
+            im = std::move(kv.second);
+        }
     }
 
+    // Transactional global refinement (D36): one toxic registration can bend a
+    // small model until the filters shred it. If refinement collapses the model,
+    // restore the snapshot and de-register the images added since the last one.
     void checkedRefine(bool final_pass) {
         uint32_t reg_before = rec_.numRegistered();
         Snapshot snap;
@@ -3405,6 +3423,15 @@ private:
             for (size_t i = 0; i < db_.images.size(); i++) nf[i] = feats_[i].count();
             return nf;
         }());
+        if (!opt_.spill_dir.empty()) {
+            size_t entries = 0;
+            for (const TwoViewMatches& p : db_.pairs) entries += 2 * p.matches.size();
+            static std::atomic<uint32_t> serial{0};
+            if (entries * 4 > (256ull << 20))
+                graph_.spill((std::filesystem::path(opt_.spill_dir) /
+                              (".spirula-graph-" + std::to_string(serial++) + ".spill"))
+                                 .string());
+        }
         reg_trials_.assign(db_.images.size(), 0);
         if (rigs_) initRigCalib(rec_);
         // Size the score bookkeeping now: attachObservation can run before the
@@ -3426,6 +3453,7 @@ private:
         gps_latched_ = gps_latch_rerank_ = false;
         gps_checked_imgs_.clear();
         gps_refused_imgs_.clear();
+        gps_deferred_imgs_.clear();
         level_frame_ = LevelFrame{};
         rig_refined_at_ = 0;
         rec_.points3D.clear();
@@ -6230,6 +6258,7 @@ private:
     bool gps_latch_rerank_ = false;     // ... newly, so a ranking that failed is retried
     std::unordered_set<uint32_t> gps_checked_imgs_;
     std::unordered_map<uint32_t, int> gps_refused_imgs_;   // standing refusals, by count
+    std::unordered_set<uint32_t> gps_deferred_imgs_;       // ever refused on this model
     // openSeams' rule, set on 27 models (canopy, power-corridor, a no-GPS Osmo 360 clip, an Avata 360
     // flight): a seam link shares 0-1 covisible images (any other candidate 27+), its offset is 0.12-0.26 of depth
     // (loop pairs <= 0.033) and its kink ratio 31-138 (other pairs 3 apart or fewer <= 8.3).
@@ -6257,6 +6286,9 @@ private:
     bool level_latched_ = false;       // the level prior is off for the run
     std::unordered_set<uint32_t> level_checked_imgs_, level_refused_imgs_;
     uint32_t gps_out_run_ = 0;         // consecutive registrations beyond its radius
+    bool gps_last_in_ = true;          // the last check was inside it: a far one now is refused
+    bool gps_in_since_ba_ = true;      // a check came inside since the last BA gpsCheck asked for
+    uint32_t gps_ba_backoff_ = 1;      // gpsBaDue's multiplier
     uint32_t gps_regs_since_ba_ = 0;   // registrations since a BA gpsCheck asked for
     static constexpr uint32_t kBssUnseen = UINT32_MAX;
     std::vector<uint32_t> bss_stamp_;  // per image, the check that first saw it registered

@@ -12,8 +12,15 @@
 #include "app/Tools.h"
 #include "i18n/Locale.h"
 #include "i18n/catalog/Cli.h"
+#include "i18n/catalog/Dense.h"
+#ifdef SS_TOOL_SAM
+#include "app/ModelLicenses.h"
+#include "app/cli/LicenseCli.h"   // --accept-license: the inference layer is in this build
+#include "nn/Device.h"
+#endif
 
 #include <cctype>
+#include <exception>
 #include <cstdio>
 #include <cstdlib>
 #ifdef _WIN32
@@ -75,6 +82,9 @@ const std::vector<Tool>& tools() {
 #ifdef SS_TOOL_GEOMETRY
         {app::kToolGeometry, &cmsg::tool_geometry, spirula_geometry_main},
 #endif
+#ifdef SS_TOOL_DENSE
+        {app::kToolDense, &spirula::i18n::msg::dense::title, spirula_dense_main},
+#endif
 #ifdef SS_TOOL_MESH
         {app::kToolMesh, &cmsg::tool_mesh, spirula_mesh_main},
 #endif
@@ -134,6 +144,15 @@ void print_usage() {
                 spirula::i18n::language_list().c_str());
 }
 
+// The inference device must go before static destructors run: a validation
+// layer's own statics are gone by then, and it aborts on the first call.
+int finish_tool(int rc) {
+#ifdef SS_TOOL_SAM
+    nn::shutdown();
+#endif
+    return rc;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -173,6 +192,20 @@ int main(int argc, char** argv) {
     const char* lang = spirula::i18n::take_lang_arg(&argc, argv);
     spirula::i18n::init(lang, nullptr);
 
+#ifdef SS_TOOL_SAM
+    // --accept-license, anywhere in argv and for every command: how a terminal
+    // accepts a model licence. Removed from argv, so no tool's parser sees it;
+    // the gate installed here answers every command that fetches a licensed model.
+    try {
+        app::register_model_licenses();
+        app::install_license_gate();
+        app::consume_accept_license_args(argc, argv);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "%s\n", e.what());
+        return 2;
+    }
+#endif
+
     // Every tool, not only the window: the GUI runs reconstruction, masking
     // and meshing as child processes, and a child that dies of a fault leaves
     // its parent an exit status and nothing else.
@@ -192,7 +225,7 @@ int main(int argc, char** argv) {
             sub.push_back(prog.data());
             for (int i = 2; i < argc; i++) sub.push_back(argv[i]);
             sub.push_back(nullptr);
-            return t->run((int)sub.size() - 1, sub.data());
+            return finish_tool(t->run((int)sub.size() - 1, sub.data()));
         }
     }
 
@@ -200,7 +233,7 @@ int main(int argc, char** argv) {
     // spirula-sfm symlink behaves exactly as the separate executable did.
     if (const Tool* t = tool_from_argv0(argc > 0 ? argv[0] : nullptr)) {
         app::set_crash_note(t->name);
-        return t->run(argc, argv);
+        return finish_tool(t->run(argc, argv));
     }
 
     if (argc > 1) {

@@ -10,6 +10,7 @@
 #include "app/gui/ColmapRunner.h"
 #include "app/gui/CommandRunner.h"
 #include "app/gui/CompareView.h"
+#include "app/gui/DenseMemoryView.h"
 #include "app/gui/Fonts.h"
 #include "app/gui/ConfigUI.h"
 #include "app/gui/FileDialog.h"
@@ -27,17 +28,20 @@
 #include "app/gui/MeshRunner.h"
 #include "app/gui/ModelCache.h"
 #include "app/gui/RecentList.h"
+#include "app/gui/Screenshot.h"
 #include "app/gui/SegmentPanel.h"
 #include "app/gui/mask/MaskSession.h"
 #include "app/gui/SfmRunner.h"
 #include "app/gui/SourceList.h"
 #include "app/gui/SourceProbe.h"
+#include "app/gui/StageEta.h"
 #include "app/gui/TelemetryProbe.h"
 #include "app/gui/TrainPreset.h"
 #include "app/gui/TrainRunner.h"
 #include "app/gui/ViewportPanel.h"
 #include "data/PointCloudFile.h"
 
+#include <cstddef>
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -121,7 +125,7 @@ private:
         MeshSource, MeshPhotos, MeshOutput, AddSplatFile, SplatFolder,
         EditSaveFile, EditSaveFolder, RenderProjectSave, RenderProjectOpen,
         RenderOutput, RenderAddModel, StencilFile, SeedPointcloud,
-        ConfigPath, LidarSource
+        ConfigPath, LidarSource, ResumeRun, SourceLut
     };
     // Which reconstruction back end the New Dataset screen runs.
     enum class Engine { BuiltIn, Colmap };
@@ -234,6 +238,17 @@ private:
     // Arm the shared save dialog for `kind`, seeded from what is on screen.
     void open_preset_save(PresetKind kind);
     void start_training();
+    // ---- screenshots (defined in Screenshot.cpp) ----
+    // The button and its settings popup, ending `right` px from the row's end.
+    void draw_screenshot_controls(float right);
+    void take_screenshot();
+    // The viewer's: every splat pane, each beside its own dataset.
+    void draw_viewer_screenshot_controls();
+    void take_viewer_screenshots();
+    // The shared "..." popup, and the log lines of writes that finished.
+    void draw_screenshot_settings();
+    void poll_screenshot_jobs();
+
     // Everything that renders from the training session, released together.
     // Every path that replaces or destroys the session goes through this.
     void detach_session_views();
@@ -320,6 +335,46 @@ private:
     void draw_model_fetch(FileDownload& dl, const spirula::i18n::Msg& missing,
                           const spirula::i18n::Msg& get, const std::function<void()>& request);
     bool license_accepted(const std::string& family) const;
+    mutable std::vector<std::string> _accepted_cache;   // gui.conf, as of _accepted_frame
+    mutable int _accepted_frame = -1;
+    // Raises one modal per family not yet accepted, in order, then runs `then`.
+    // Cancelling any of them drops the rest and `then` never runs.
+    // `declined` runs when the user cancels one of them instead.
+    void request_licenses(std::vector<std::string> families, std::function<void()> then,
+                          std::function<void()> declined = nullptr);
+    void advance_license_queue();
+    // Starts a queue of files after the consent every one of them names: the dialog
+    // first when a licence is missing, the download then, nothing on a refusal.
+    // The one door for a download that is not a SAM / detector checkpoint.
+    void start_downloads_with_consent(DownloadQueue& queue, std::vector<PendingDownload> files);
+    // Said when a licence dialog is cancelled: the log, and a line by the fetch button.
+    void note_license_declined(const spirula::i18n::Msg& what);
+
+    // A batch asks for every licence its rows need, once, before the first row
+    // starts, then fetches what is missing, then starts. Never mid-batch.
+    struct BatchFetchPlan {
+        std::vector<std::string> families;                           // unaccepted, each once
+        std::vector<std::pair<std::string, std::string>> masks;      // model id, detector id
+        std::vector<std::string> geometries;
+        std::vector<size_t> fetchers;                                // _batch_fetchers still to run
+        bool empty() const {
+            return families.empty() && masks.empty() && geometries.empty() && fetchers.empty();
+        }
+    };
+    // A download a batch needs beyond the masking and geometry checkpoints. A
+    // feature registers one; the plan and the pump know no feature by name.
+    struct BatchFetcher {
+        // True when `needs` calls for a download that is not on disk yet; the
+        // licence families it would ask about are appended to `families`.
+        std::function<bool(const BatchModelNeeds& needs, std::vector<std::string>& families)> due;
+        std::function<FileDownload*()> active;   // its download while it runs, else null
+        std::function<void()> start;             // begins it (consent was given first)
+    };
+    void add_batch_fetcher(BatchFetcher f) { _batch_fetchers.push_back(std::move(f)); }
+    std::vector<BatchFetcher> _batch_fetchers;
+    BatchFetchPlan batch_fetch_plan() const;
+    void begin_batch(bool skip_invalid);
+    void pump_batch_fetch();
 
     // ---- screens ----
     void draw_menu_bar();
@@ -345,6 +400,7 @@ private:
     void probe_recent();
     void draw_new_dataset();
     void draw_dataset_source();       // input list / output / resume
+    bool draw_source_lut(size_t input);
     void draw_sensor_badge(const PrepInput& s);
     void draw_dataset_basics();       // the four or five knobs a beginner needs
     void draw_source_cameras();       // one lens per input, when there are several
@@ -402,6 +458,7 @@ private:
     void draw_dataset_preview(float height);
     bool preview_has_content() const;
     void poll_sfm_progress();
+    void poll_dense_progress();
     // Which of the three the running step implies, or -1 for none.
     int preview_for_stage();
     // Release everything the preview holds -- GL buffers, the watcher thread,
@@ -430,6 +487,8 @@ private:
     // when the folder changes, and from the plan's own button.
     void restore_from_record(bool announce);
     void restore_record_rows(const DatasetRecord& rec);
+    // The re-dos and the stages kept or forced: one run's worth each.
+    void forget_redo_requests();
     // Everything start_dataset_job does once the confirmation is settled.
     // False when the run did not start (busy, or the device could not be frozen).
     bool launch_dataset_job();
@@ -574,6 +633,9 @@ private:
     // The splitter and then the panel. Call after the body child has ended.
     void draw_log_panel(float height);
     void draw_confirm_modal();
+    // A stopped run, continued: its own config.json, as `spirula train --resume` builds it.
+    void open_resume(const std::string& path);
+    void draw_resume_error();
     void draw_data_error_modal();
     void handle_dialog_result(const std::vector<std::string>& paths);
     // Take paths onto the input list; `replace` clears a fresh pick's inputs.
@@ -613,6 +675,13 @@ private:
         bool mask_flipped = false;
     };
     DatasetFolders _sparse_edit_src;
+    bool _force_dense_seed = false;
+    // Progressive splat budget: the mode and one box per resolution stage.
+    void draw_splat_budget(float w);
+    int64_t starting_points();
+    std::string _seed_count_path;
+    int64_t _seed_count = -1;
+    std::filesystem::file_time_type _seed_count_time{};   // the next open trains from the dense cloud just edited
     // A dataset already in the output folder, read the way a run would read it.
     DatasetFolders workspace_folders(const WorkspaceState& prior) const;
     // Open in trainer / edit reconstruction / correct masks, for one dataset.
@@ -685,6 +754,8 @@ private:
     // Persisted: the last value the user gave save_full_checkpoint by hand. A
     // preset only overrides it by turning it on.
     bool _keep_full_ckpt = false;
+    ScreenshotSettings _shot;
+    std::vector<std::future<std::string>> _shot_jobs;   // path written, or throws
 
     // Saved presets, one picker per kind.
     PresetPicker<TrainPreset> _train_presets;
@@ -779,6 +850,26 @@ private:
     // Snapshot files already read, by their write time; 0 means "not yet".
     int64_t _model_mtime = 0, _pairs_mtime = 0, _matches_mtime = 0;
     double _sfm_polled_at = -1.0;
+    // The dense step's own model.bin (dense::progress_dir), shown in the same view.
+    int64_t _dense_model_mtime = 0;
+    double _dense_polled_at = -1.0;
+    double _dense_refresh_seconds = 0.5;
+    struct DenseLiveRead {
+        LiveModel model;
+        int64_t stamp = 0;
+        double seconds = 0;
+        bool updated = false, during_run = false;
+        std::string error;
+    };
+    std::future<DenseLiveRead> _dense_model_read;
+    std::string _dense_preview_error;
+    bool _dense_live = false;
+    DenseMemoryView _dense_memory;
+    bool _dense_memory_active = false;
+    StageEta _dense_eta;
+    std::string _resume_error;
+    bool _open_resume_error = false;
+    double _dense_started_at = 0.0;
     bool _show_preview = true;
     // Which view the panel shows: -1 follows the running step, otherwise the
     // one the user picked and wants to keep.
@@ -793,6 +884,8 @@ private:
     // to skip. Separate from GeometryJob::overwrite so pressing the button
     // does not leave the option ticked for every run after it.
     bool _redo_geometry = false;
+    bool _redo_dense = false;
+    bool _dense_rebuild = false;   // this run matches again, ignoring saved pair predictions
     // Panel-level state, copied into whichever job runs. The inputs are kept as
     // the struct both runners take (PrepInput), so the panel edits the thing
     // that runs instead of a parallel copy of it: a video file or photo folder
@@ -815,6 +908,10 @@ private:
     // nothing (draw_dataset_source).
     std::vector<std::string> _fps_text;
     int _fps_editing = -1;
+    // The screen's "Advanced" header as last drawn. What a beginner should not
+    // have to read -- an input's LUT, starting focal, rig -- shows in place only
+    // while it is open, so the input list is never drawn twice.
+    bool _ds_advanced = false;
     // What each input's IMU / GPS holds, read on its own thread and keyed by
     // path, so re-choosing a file already read costs nothing.
     TelemetryProbe _telemetry;
@@ -827,6 +924,10 @@ private:
     // output folder or the inputs change.
     bool _keep_built = false;
     std::string _keep_built_for;
+    // The reconstruction's stages ticked or unticked in the plan list
+    // (PlanRequest::parts), for this output folder only.
+    PartChoice _part_choice[kNumModelParts] = {};
+    std::string _part_choice_for;
     bool _resume = true;
     bool _mask_enable = false;
     // Hide what the masks cover from feature detection too, not only from
@@ -867,6 +968,24 @@ private:
     // One job for both engines (SfmJob / ColmapJob carry a copy), the panel
     // that tries it on one frame, and the checkpoint fetch.
     GeometryJob _geometry;
+    DenseJob _dense;
+    FileDownload _dense_download;
+    std::string _dense_selected_seed;
+    std::string _dense_config_error;   // why the last advanced edit is invalid
+    void draw_dense_options();
+    void draw_dense_advanced();
+    void draw_train_mask_mode(float width);
+    void draw_seed_cloud(TrainRunner::Phase ph);
+    void draw_dataset_geometry();
+    bool dense_cloud_present();
+    std::string _dense_probe_data;     // dense_cloud_present()'s cache
+    double _dense_probe_time = -1.0;
+    bool _dense_probe_found = false;
+    bool _seed_other = false;          // "Other PLY file" picked, no file yet
+    // RoMa's licence and its batch fetcher. Once, before anything asks either.
+    void init_dense();
+    void request_dense_download();
+    bool dense_model_missing() const;
     GeometryPanel _geometry_panel;
     PartitionPanel _partition_panel;
     void open_partition_panel(const DatasetFolders& f);
@@ -943,9 +1062,14 @@ private:
     FontSet _fonts;
     FileDownload _font_download;
     const CjkFace* _font_fetching = nullptr;
-    // Families whose licence the user has accepted, persisted in the settings.
-    std::vector<std::string> _accepted_licenses;
+    std::string _license_notice;      // what a cancelled dialog left undone
+    BatchFetchPlan _batch_fetch;      // what the batch is fetching before it starts
+    bool _batch_fetching = false;
+    bool _batch_fetch_skip = false;
     std::string _license_prompt;      // family whose modal is open
+    std::vector<std::string> _license_queue;
+    std::function<void()> _license_then;
+    std::function<void()> _license_declined;
     std::string _license_model_id;    // the pick it downloads
     std::string _license_detector_id;
     bool _license_tick = false;
@@ -983,6 +1107,7 @@ private:
     FileDialog _dialog;
     PickAction _pick = PickAction::None;
     std::string _pick_key;            // dir_key() of the pick in flight
+    int _pick_lut = -1;               // which input PickAction::SourceLut sets
     int _pick_source = -1;            // which input PickAction::SourceReplace edits
     std::string _pick_field;          // which flag PickAction::ConfigPath sets
     // Which batch row the pending pick edits; -1 appends a new row.

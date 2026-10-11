@@ -12,10 +12,20 @@ implementation, shared by the CLI trainer, the GUI and the WASM viewer.
 |---|---|---|
 | COLMAP | `cameras`/`images`, and `points3D` if there is one, in `.bin` or `.txt` | `ColmapParser.cpp` |
 | Nerfstudio | `transforms.json`, and a PLY point cloud if there is one | `NerfstudioParser.cpp` (PLY reader lives here) |
-| Metashape | camera-export `.xml`, a `.ply` if there is one, optionally a `.psx` project for filename disambiguation | `MetashapeParser.cpp` (XML via `app/Xml.h`, zips via `external/miniz`) |
+| Metashape | camera-export `.xml`, a `.ply` if there is one, optionally a `.psx` project for filename disambiguation; or a `.psx` project alone | `MetashapeParser.cpp` (XML via `app/Xml.h`, zips via `external/miniz`) |
 
 The point cloud is optional in every format: a dataset without one, or with an
 empty one, parses to poses alone and the trainer seeds it at random (below).
+
+A Metashape `.psx` with no camera-export `.xml` beside it is read directly:
+the active chunk's sensors, components and camera poses from
+`<name>.files/.../chunk.zip`, photo paths from the first frame's `frame.zip`,
+and the chosen component's tie points (coloured by track) from its
+`point_cloud.zip` as the seed cloud. The project has to be saved after
+*Align Photos*; one that never was fails with "no camera ... is aligned". When
+the folder holds several `.xml` or `.psx` files the parser will not guess:
+name one with `--metashape-xml` / `--metashape-psx` (the GUI's *Metashape
+project file* under All Options).
 
 An E57 laser scan is not read in place: it is written out once as a Nerfstudio
 dataset (below, "E57 laser scans"), which then opens like any other.
@@ -34,7 +44,10 @@ root included -- is an input like any other on the GUI's dataset screen: its
 model is reused, and the run only adds what was asked for (masks, depth and
 normals). `spirula geometry <dataset>` does the depth-and-normal half from the
 command line. Both write `depths/` and `normals/` beside `images/`, where the
-parsers already look, and touch nothing else.
+parsers already look, and touch nothing else. When a dataset has them, the
+trainer's Basic Options shows **Use dataset depth maps** (off by default; on
+sets `depth_supervision_weight` to the preset's value, or 0.05) and **Use
+dataset normal maps** (on by default); unticking zeroes the weight.
 
 ## Masks
 
@@ -45,8 +58,10 @@ A training image's mask comes from up to two places:
   `flip_mask` swaps that for files that paint what to remove;
 - **the image's own alpha channel**, for an RGBA (or gray + alpha) image whose
   alpha is not opaque everywhere -- a render or a cut-out with a transparent
-  background. Opaque from 128 up, the gate the dataset screen's JPEG
-  conversion uses when it turns alpha into a mask file.
+  background. PNG, TIFF and EXR (its `A` channel) alike. Opaque from 128 up
+  (0.5 for an EXR), the gate the dataset screen's JPEG conversion uses when it
+  turns alpha into a mask file. `spirula sfm` reads the same alpha when it
+  finds features, so a cut-out's background gets no keypoints either.
 
 With both, a pixel is kept only where both keep it, and `flip_mask` applies
 to the file alone: alpha always means "transparent is not the subject". The two
@@ -58,16 +73,19 @@ aspect ratio differs from its image's is stretched onto it with a warning.
 
 Against a constant background (`background_mode` `color`), a cut-out image's
 colour is also composited onto `background_color` by its alpha as it is
-decoded: a transparent pixel's ground truth is the background it is rendered
-on, which is what eval scores a render against over the whole frame, what the
-Images tab shows, and what a soft edge renders as. The other background modes
+decoded (an EXR's colour is premultiplied, so the background fills only what
+its alpha leaves): a transparent pixel's ground truth is the background it is
+rendered on, which is what eval scores a render against over the whole frame,
+what the Images tab shows, and what a soft edge renders as. The other background modes
 have no one colour to composite onto and keep the stored one.
 
 What a masked-out pixel means is `apply_loss_for_mask` (the GUI's Mask mode):
 ignored ("Ignore distractors") or trained as empty space ("Cut out
 background"). Left unset it resolves per dataset: cut out when the only masks
-are the images' alpha, ignore otherwise -- a mask file is as likely to mark a
-passer-by as a background. `config.json` records the resolved value.
+are the images' alpha or the seed is this dataset's `dense/roma.ply`; ignore
+otherwise. An explicit policy retains precedence. `config.json` records the
+resolved value. The dense panel and trainer use the same Mask mode control;
+Don't use masks disables both alpha and sidecar masks.
 
 Which files carry alpha is read from their headers, then settled by decoding
 the first, middle and last of them: an RGBA export that is opaque everywhere is
@@ -87,12 +105,14 @@ PLY (ASCII or binary little-endian), for example a registered LiDAR cloud.
 It requires `x`, `y`, `z`, `red`, `green`, `blue`; coordinates must be finite
 and the cloud nonempty. Integer RGB is 0–255; floating RGB is 0–1.
 Relative paths resolve from the dataset directory; absolute paths also work.
-The GUI's training options include **Seed point cloud PLY** with a file picker;
-the CLI equivalent is `--seed-pointcloud lidar.ply`.
-Switching built-in training presets preserves this selection. **Use dataset
-points** clears the override and reloads the dataset's cloud. The GUI shows
-the initialization source and warns when another setting bypasses the selected
-external cloud.
+The CLI flag is `--seed-pointcloud lidar.ply`. Left empty, it picks the
+dataset's finished dense cloud (`dense/roma.ply`, [dense.md](dense.md)) when
+there is one; `sparse` always keeps the format's own cloud. In the GUI, Basic
+Options shows a **Starting points** choice only when the dataset has a dense
+cloud or a seed is already set: **Dense cloud**, **Sparse points** or **Other
+PLY file** with a file picker. Otherwise the flag is under All Options. Switching built-in training presets preserves
+this selection, and the GUI warns when resume, a Gaussian PLY or random
+initialization bypasses it.
 
 The external cloud replaces, rather than appends to, the format's own cloud.
 It must already align with the cameras in the source dataset coordinate frame
@@ -105,7 +125,8 @@ on disk are not modified. This path is saved in training presets and config.json
 With `init_ply`, the seed cloud contributes only if `init_ply_add_points` is
 enabled; resume restores checkpoint splats instead. `random_init=always`
 still replaces the selected cloud with random points. Leave `seed_pointcloud`
-empty to retain the format's existing behavior.
+empty on a dataset without a dense cloud, or set it to `sparse`, to keep the
+format's existing behavior.
 
 The splats start from the dataset's point cloud. `random_init` decides when
 they start from points drawn at random around the cameras instead: `auto` (the
@@ -447,14 +468,29 @@ what a geo-referenced reconstruction needs -- a model millions of units from
 its origin loses metres to single precision otherwise. The modes are
 `point-median` (geometric median of the seed cloud), `camera-median`,
 `camera-focus` (the point the optical axes converge on), `point-mean` and
-`camera-mean`; `none` (the default) keeps the frame the files came in. The
-shift, and the identity rotation and scale that go with it, are written to
+`camera-mean`; `none` keeps the frame the files came in.
+
+`auto`, the default, is `point-median` for a scene that lies far from its
+origin for its size and `none` for every other: it centres when the camera
+positions AND the seed points each have a geometric median more than
+`--scene-center-threshold` (20) times their own radius -- the median distance
+to that median -- from the origin. Precision is relative, so the test is
+scale-free: an ECEF or UTM capture is thousands of radii out, a COLMAP or
+Nerfstudio frame a few. The cameras are tested first and most datasets stop
+there; the points' verdict uses at most 2^18 of them, and only a centring
+scene pays for the full median (`dsparse::resolve_scene_center`). A dataset
+without points is decided, and centred, on its cameras alone.
+
+The shift, and the identity rotation and scale that go with it, are written to
 `scene_transform.json` in the run folder in every common spelling (4x4
 matrices, quaternions, Euler angles), so a downstream tool can put the
 splats back into the dataset's frame without converting anything by hand.
 The centre is taken over every frame before the train/eval split and over
-the whole seed cloud, so both splits, `spirula mesh` and the viewers -- all
-of which re-read `config.json` -- land in the same frame.
+the whole seed cloud. The eval split re-parses with the mode `auto` resolved
+to, and `spirula mesh` takes the recorded centre from `scene_transform.json`
+rather than measuring again (it reads neither the run's seed cloud nor its
+outlier filter), so both land in the training frame. A run whose
+`config.json` predates `--scene-center` resumes as `none`.
 
 The same six modes are also a *view* setting, offered by all three viewers as
 a "center" menu (camera position median by default) that moves the orbit
@@ -753,6 +789,37 @@ A workspace records what its frames were extracted with
 differs -- a different rate, a different unwrap, another clip in the list --
 asks before it goes back to the video, and drops the features and matches that
 describe the old frames.
+
+### Colour LUTs
+
+Log footage is flat; a video row can name a 3D LUT that is baked into its
+frames as they are extracted, so SfM, masking, depth and the trained model all
+see the maker's intended Rec.709 colours. The GUI shows the column only under
+Advanced (the row says which LUT is in effect either way); `spirula sam
+extract --lut <file.cube | name | auto>` is the same thing on the command line.
+
+- **Automatic** is the row's default. A camera original whose own metadata
+  says it was shot in a log profile Spirula knows gets that maker's LUT --
+  DJI D-Log and D-Log M (Osmo 360, Osmo Action 5 Pro, Avata 360), GoPro
+  GP-Log on a MAX 2, Sony S-Log3/S-Gamut3.Cine, Panasonic V-Log
+  (`sfm::video_log_profile`, in builds with the built-in SfM). The colour tags are never evidence: log clips
+  are tagged BT.709 or BT.2020 like any other. Otherwise a row takes the
+  choice made on a row above it, as the rate column does; a detected LUT
+  stays with its own file.
+- **The built-in LUTs** are formulas: each maker's published log curve and
+  gamut, then a look fitted to what the maker's own LUT does to natural
+  photographs -- 0.1 to 1.6 of an 8-bit level off it on average there -- or,
+  for GoPro, GoPro's own exact formulas (docs/notes/log-luts.md). Nothing of
+  a maker's LUT ships, and nothing is downloaded at run time.
+- **A .cube file** is read as is; one with a 1D shaper in front is refused.
+
+The built-in decoder maps the LUT in the YCbCr-to-RGB shader, before the
+8-bit rounding, so a 10-bit log clip keeps its precision through the
+expansion. The GUI's ffmpeg route uses ffmpeg's own `lut3d` (a built-in is
+written to a `.cube` in the temp directory for it); frame extraction decoding
+through ffmpeg maps the 8-bit frames it keeps, after the window has been
+scored, so the LUT cannot change which frames are chosen. The LUT is part of
+what the frames were extracted with, so changing it re-extracts.
 
 ### Adaptive spacing
 
